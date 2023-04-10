@@ -1,35 +1,51 @@
-use std::{collections::HashMap, time::Duration};
+use bollard::Docker;
+use std::collections::HashMap;
+use std::env;
+use tracing::{debug, info};
 
 use anyhow::Context;
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 use docker_reaper::{reap_containers, ReapContainersConfig};
-use tokio::time::sleep;
+use tokio::time::{sleep, Duration};
 
 #[derive(Debug, Parser)]
 #[command(after_help = "Note: <duration> values accept Go-style duration strings (e.g. 1m30s)")]
-struct Args {
-    /// Interval to wait after reaping containers.
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+    /// Interval to wait after reaping resources.
     #[arg(long, value_name = "duration", value_parser = parse_duration, default_value = "60s")]
     every: Duration,
-    /// Only reap containers once. Conflicts with "--every".
+    /// Only reap resources once. Conflicts with "--every".
     #[arg(long, conflicts_with = "every")]
     once: bool,
-    /// Log output without actually removing containers or networks.
+    /// Log output without actually removing resources.
     #[arg(long, short = 'd')]
     dry_run: bool,
-    /// Only containers older than this duration will be eligible for reaping.
-    #[arg(long, value_name = "duration")]
-    min_age: Option<String>,
-    /// Only containers younger than this duration will be eligible for reaping.
-    #[arg(long, value_name = "duration")]
-    max_age: Option<String>,
-    /// Additional Docker Engine-supported [container filters](https://docs.docker.com/engine/reference/commandline/ps/#filter). Can be specified multiple times.
+}
+
+#[derive(Debug, Subcommand)]
+enum Commands {
+    /// Reaps matching expired containers.
+    Containers(ContainersArgs),
+}
+
+#[derive(Debug, Args)]
+#[command(after_help = "Note: <duration> values accept Go-style duration strings (e.g. 1m30s)")]
+struct ContainersArgs {
+    /// Only reap containers older than this duration.
+    #[arg(long, value_name = "duration", value_parser = parse_duration)]
+    min_age: Option<Duration>,
+    /// Only reap containers younger than this duration.
+    #[arg(long, value_name = "duration", value_parser = parse_duration)]
+    max_age: Option<Duration>,
+    /// Only reap containers matching a Docker Engine-supported filter [container filter](https://docs.docker.com/engine/reference/commandline/ps/#filter). Can be specified multiple times.
     #[arg(
         name = "filter",
         long,
         short = 'f',
-        // todo: https://github.com/clap-rs/clap/issues/2389
-        help = "Additional Docker-engine supported container filters (https://docs.docker.com/engine/reference/commandline/ps/#filter). Can be specified multiple times",
+        // TODO: https://github.com/clap-rs/clap/issues/2389
+        help = "Only reap containers matching a Docker Engine-supported filter (https://docs.docker.com/engine/reference/commandline/ps/#filter). Can be specified multiple times",
         value_name = "name=value",
         value_parser = parse_filter
     )]
@@ -39,33 +55,8 @@ struct Args {
     reap_networks: bool,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), anyhow::Error> {
-    let args = Args::parse();
-    let config = ReapContainersConfig {
-        dry_run: args.dry_run,
-        min_age: args.min_age,
-        max_age: args.max_age,
-        filters: {
-            args.filters.iter().fold(HashMap::new(), |mut acc, f| {
-                acc.entry(f.name.clone()).or_default().push(f.value.clone());
-                acc
-            })
-        },
-        reap_networks: args.reap_networks,
-    };
-    if args.once {
-        reap_containers(&config).await;
-    } else {
-        loop {
-            reap_containers(&config).await;
-            sleep(args.every).await;
-        }
-    }
-    Ok(())
-}
-
 #[derive(Clone, Debug)]
+/// A Docker Engine filter (see https://docs.docker.com/engine/reference/commandline/ps/#filter)
 pub(crate) struct Filter {
     name: String,
     value: String,
@@ -99,4 +90,64 @@ fn parse_duration(value: &str) -> Result<Duration, anyhow::Error> {
     };
     let sleep_ns: u64 = sleep_ns.try_into()?;
     Ok(Duration::from_nanos(sleep_ns))
+}
+
+#[tokio::main]
+async fn main() -> Result<(), anyhow::Error> {
+    tracing_subscriber::fmt::init();
+
+    let global_args = Cli::parse();
+    let docker = {
+        if env::var("DOCKER_CERT_PATH").is_ok() {
+            debug!("Environment variable DOCKER_CERT_PATH set. Connecting via TLS");
+            Docker::connect_with_ssl_defaults()?
+        } else if env::var("DOCKER_HOST").is_ok() {
+            debug!("Environment variable DOCKER_HOST set, but not DOCKER_CERT_PATH. Connecting via HTTP");
+            Docker::connect_with_http_defaults()?
+        } else {
+            debug!("Environment variable DOCKER_HOST not set, connecting to local machine");
+            Docker::connect_with_local_defaults()?
+        }
+    };
+
+    if global_args.once {
+        info!("Reaping resources once");
+    } else {
+        info!("Reaping resources every {} seconds", global_args.every.as_secs());
+    }
+
+    loop {
+        info!("Starting new run ({})", chrono::Utc::now().to_rfc3339());
+        let result = match global_args.command {
+            Commands::Containers(ref args) => {
+                let config = ReapContainersConfig {
+                    dry_run: global_args.dry_run,
+                    min_age: args.min_age,
+                    max_age: args.max_age,
+                    filters: {
+                        args.filters.iter().fold(HashMap::new(), |mut acc, f| {
+                            acc.entry(f.name.clone()).or_default().push(f.value.clone());
+                            acc
+                        })
+                    },
+                    reap_networks: args.reap_networks,
+                };
+                reap_containers(&docker, &config).await
+            }
+        };
+        match result {
+            Ok(removed_objects) => {
+                todo!()
+            },
+            Err(e) => {
+                todo!()
+            },
+        }
+        if global_args.once {
+            break;
+        } else {
+            sleep(global_args.every).await;
+        }
+    }
+    Ok(())
 }
