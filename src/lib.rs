@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tabled::Tabled;
 use thiserror::Error;
 use tokio::time::Duration;
+use tracing::debug;
 
 #[derive(Debug)]
 pub struct ReapContainersConfig<'a> {
@@ -98,6 +99,7 @@ impl Resource {
     /// After competion, the resource's `status` will be either `RemovalStatus::Success` or
     /// `RemovalStatus::Error`.
     async fn remove(&mut self, docker: &Docker) {
+        debug!("Removing {} {}", self.resource_type, self.name);
         match self.resource_type {
             ResourceType::Container => {
                 let options = RemoveContainerOptions {
@@ -233,9 +235,23 @@ pub async fn reap_containers(
     if config.dry_run {
         return Ok(eligible_resources);
     }
-    let futures = eligible_resources.into_iter().map(|mut r| async move {
-        r.remove(&docker).await;
-        r
-    });
-    return Ok(futures::future::join_all(futures).await);
+    // Remove containers before networks, as otherwise there will be active endpoints
+    let mut container_futures = Vec::new();
+    let mut network_futures = Vec::new();
+    for mut resource in eligible_resources {
+        match resource.resource_type {
+            ResourceType::Container => container_futures.push(async move {
+                resource.remove(&docker).await;
+                resource
+            }),
+            ResourceType::Network => network_futures.push(async move {
+                resource.remove(&docker).await;
+                resource
+            }),
+            _ => unreachable!(),
+        }
+    }
+    let mut removed_resources = futures::future::join_all(container_futures).await;
+    removed_resources.extend(futures::future::join_all(network_futures).await);
+    return Ok(removed_resources);
 }
