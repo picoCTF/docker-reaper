@@ -32,7 +32,7 @@ enum RemovalStatus {
     /// Resource was successfully removed.
     Success,
     /// An error occurred when attempting to remove this resource.
-    Error(bollard::errors::Error),
+    Error(RemovalError),
 }
 
 impl fmt::Display for RemovalStatus {
