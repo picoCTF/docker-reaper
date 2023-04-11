@@ -1,11 +1,11 @@
 use bollard::Docker;
-use std::collections::HashMap;
 use std::env;
-use tracing::{debug, info};
+use tabled::Table;
+use tracing::{debug, error, info, warn};
 
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
-use docker_reaper::{reap_containers, ReapContainersConfig};
+use docker_reaper::{reap_containers, Filter, ReapContainersConfig};
 use tokio::time::{sleep, Duration};
 
 #[derive(Debug, Parser)]
@@ -55,22 +55,6 @@ struct ContainersArgs {
     reap_networks: bool,
 }
 
-#[derive(Clone, Debug)]
-/// A Docker Engine filter (see https://docs.docker.com/engine/reference/commandline/ps/#filter)
-pub(crate) struct Filter {
-    name: String,
-    value: String,
-}
-
-impl Filter {
-    pub(crate) fn new(name: &str, value: &str) -> Self {
-        Self {
-            name: String::from(name),
-            value: String::from(value),
-        }
-    }
-}
-
 fn parse_filter(value: &str) -> Result<Filter, anyhow::Error> {
     let err_msg = "filters must be in NAME=VALUE(=VALUE) format";
     let (name, value) = value.split_once('=').context(err_msg)?;
@@ -110,10 +94,16 @@ async fn main() -> Result<(), anyhow::Error> {
         }
     };
 
+    if global_args.dry_run {
+        warn!("Dry run: no resources will be removed");
+    }
     if global_args.once {
         info!("Reaping resources once");
     } else {
-        info!("Reaping resources every {} seconds", global_args.every.as_secs());
+        info!(
+            "Reaping resources every {} seconds",
+            global_args.every.as_secs()
+        );
     }
 
     loop {
@@ -124,30 +114,29 @@ async fn main() -> Result<(), anyhow::Error> {
                     dry_run: global_args.dry_run,
                     min_age: args.min_age,
                     max_age: args.max_age,
-                    filters: {
-                        args.filters.iter().fold(HashMap::new(), |mut acc, f| {
-                            acc.entry(f.name.clone()).or_default().push(f.value.clone());
-                            acc
-                        })
-                    },
+                    filters: &args.filters,
                     reap_networks: args.reap_networks,
                 };
                 reap_containers(&docker, &config).await
             }
         };
         match result {
-            Ok(removed_objects) => {
-                todo!()
-            },
+            Ok(removed_resources) => {
+                info!("Found {} matching resources", removed_resources.len());
+                if !removed_resources.is_empty() {
+                    let mut table = Table::new(removed_resources);
+                    info!("\n{}", table.with(tabled::Style::sharp()).to_string());
+                }
+            }
             Err(e) => {
-                todo!()
-            },
+                error!("{}", e.to_string());
+            }
         }
         if global_args.once {
-            break;
+            break Ok(());
         } else {
+            debug!("Sleeping for {:?}", global_args.every);
             sleep(global_args.every).await;
         }
     }
-    Ok(())
 }

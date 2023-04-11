@@ -11,6 +11,7 @@ bollard = { version = "0.14.0", features = ["ssl"] }
 chrono = "0.4.24"
 clap = { version = "4.1.8", features = ["derive"] }
 go-parse-duration = "0.1.1"
+tabled = "0.10.0"
 thiserror = "1.0.39"
 tokio = { version = "1.26.0", features = ["full"] }
 tracing = "0.1.37"
