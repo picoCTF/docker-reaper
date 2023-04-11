@@ -125,7 +125,16 @@ async fn main() -> Result<(), anyhow::Error> {
                 info!("Found {} matching resources", removed_resources.len());
                 if !removed_resources.is_empty() {
                     let mut table = Table::new(removed_resources);
-                    info!("\n{}", table.with(tabled::Style::sharp()).to_string());
+                    info!(
+                        "\n{}",
+                        table
+                            .with(tabled::Style::sharp())
+                            .with(
+                                tabled::Modify::new(tabled::object::Columns::last())
+                                    .with(tabled::Width::wrap(80))
+                            )
+                            .to_string()
+                    );
                 }
             }
             Err(e) => {
