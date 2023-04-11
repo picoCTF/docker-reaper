@@ -6,7 +6,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tabled::Tabled;
 use thiserror::Error;
 use tokio::time::Duration;
-use tracing::{debug, info};
 
 #[derive(Debug)]
 pub struct ReapContainersConfig<'a> {
@@ -26,9 +25,6 @@ pub struct ReapContainersConfig<'a> {
 enum RemovalStatus {
     /// Used in dry-run mode to indicate that a resource is eligible for removal.
     Eligible,
-    /// Removal of the resource is in progress. Typically not shown in results unless a timeout
-    /// occurs.
-    InProgress,
     /// Resource was successfully removed.
     Success,
     /// An error occurred when attempting to remove this resource.
@@ -39,7 +35,6 @@ impl fmt::Display for RemovalStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Eligible => write!(f, "Eligible for removal"),
-            Self::InProgress => write!(f, "Removal in progress"),
             Self::Success => write!(f, "Removed"),
             Self::Error(e) => write!(f, "Error: {}", e.to_string()),
         }
@@ -88,7 +83,7 @@ impl fmt::Display for ResourceType {
 
 #[derive(Debug, Tabled)]
 #[tabled(rename_all = "PascalCase")]
-pub struct RemovedResource {
+pub struct Resource {
     #[tabled(rename = "Resource Type")]
     resource_type: ResourceType,
     #[tabled(skip)]
@@ -96,6 +91,51 @@ pub struct RemovedResource {
     id: String,
     name: String,
     status: RemovalStatus,
+}
+
+impl Resource {
+    /// Attempts to remove this resource.
+    /// After competion, the resource's `status` will be either `RemovalStatus::Success` or
+    /// `RemovalStatus::Error`.
+    async fn remove(&mut self, docker: &Docker) {
+        match self.resource_type {
+            ResourceType::Container => {
+                let options = RemoveContainerOptions {
+                    force: true,
+                    ..Default::default()
+                };
+                match docker.remove_container(&self.id, Some(options)).await {
+                    Ok(_) => {
+                        self.status = RemovalStatus::Success;
+                    }
+                    Err(bollard::errors::Error::DockerResponseServerError {
+                        status_code: 404 | 409,
+                        ..
+                    }) => {
+                        // Mark as successful if already removed (404) or removal in progress (409)
+                        self.status = RemovalStatus::Success;
+                    }
+                    Err(e) => self.status = RemovalStatus::Error(RemovalError::Docker(e)),
+                };
+            }
+            ResourceType::Network => {
+                match docker.remove_network(&self.id).await {
+                    Ok(_) => {
+                        self.status = RemovalStatus::Success;
+                    }
+                    Err(bollard::errors::Error::DockerResponseServerError {
+                        status_code: 404 | 409,
+                        ..
+                    }) => {
+                        // Mark as successful if already removed (404) or removal in progress (409)
+                        self.status = RemovalStatus::Success;
+                    }
+                    Err(e) => self.status = RemovalStatus::Error(RemovalError::Docker(e)),
+                };
+            },
+            ResourceType::Volume => todo!(),
+        }
+    }
 }
 
 /// Error encountered while removing a resource.
@@ -112,12 +152,14 @@ pub enum ReapError {
     Docker(#[from] bollard::errors::Error),
     #[error("Current system time is before UNIX epoch")]
     InvalidSystemTime,
+    #[error(transparent)]
+    TaskError(#[from] tokio::task::JoinError),
 }
 
 pub async fn reap_containers(
     docker: &Docker,
     config: &ReapContainersConfig<'_>,
-) -> Result<Vec<RemovedResource>, ReapError> {
+) -> Result<Vec<Resource>, ReapError> {
     let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(d) => d,
         Err(_) => return Err(ReapError::InvalidSystemTime),
@@ -155,7 +197,7 @@ pub async fn reap_containers(
         });
 
     let mut eligible_networks = HashSet::new();
-    let mut resources: Vec<RemovedResource> = Vec::new();
+    let mut eligible_resources: Vec<Resource> = Vec::new();
     for container in eligible_containers {
         if let Some(id) = container.id {
             if config.reap_networks {
@@ -167,7 +209,7 @@ pub async fn reap_containers(
                     }
                 }
             }
-            resources.push(RemovedResource {
+            eligible_resources.push(Resource {
                 resource_type: ResourceType::Container,
                 id: id.clone(),
                 name: container
@@ -181,7 +223,7 @@ pub async fn reap_containers(
         }
     }
     for network in eligible_networks {
-        resources.push(RemovedResource {
+        eligible_resources.push(Resource {
             resource_type: ResourceType::Network,
             id: network.clone(),
             name: network.clone(),
@@ -189,7 +231,11 @@ pub async fn reap_containers(
         })
     }
     if config.dry_run {
-        return Ok(resources);
+        return Ok(eligible_resources);
     }
-    unimplemented!()
+    let futures = eligible_resources.into_iter().map(|mut r| async move {
+        r.remove(&docker).await;
+        r
+    });
+    return Ok(futures::future::join_all(futures).await);
 }

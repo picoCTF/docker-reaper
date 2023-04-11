@@ -94,9 +94,6 @@ async fn main() -> Result<(), anyhow::Error> {
         }
     };
 
-    if global_args.dry_run {
-        warn!("Dry run: no resources will be removed");
-    }
     if global_args.once {
         info!("Reaping resources once");
     } else {
@@ -108,6 +105,9 @@ async fn main() -> Result<(), anyhow::Error> {
 
     loop {
         info!("Starting new run ({})", chrono::Utc::now().to_rfc3339());
+        if global_args.dry_run {
+            warn!("Dry run: no resources will be removed");
+        }
         let result = match global_args.command {
             Commands::Containers(ref args) => {
                 let config = ReapContainersConfig {
