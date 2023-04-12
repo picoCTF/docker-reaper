@@ -39,7 +39,6 @@ struct ContainersArgs {
     /// Only reap containers younger than this duration.
     #[arg(long, value_name = "duration", value_parser = parse_duration)]
     max_age: Option<Duration>,
-    /// Only reap containers matching a Docker Engine-supported filter [container filter](https://docs.docker.com/engine/reference/commandline/ps/#filter). Can be specified multiple times.
     #[arg(
         name = "filter",
         long,
