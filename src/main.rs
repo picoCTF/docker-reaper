@@ -14,13 +14,13 @@ struct Cli {
     #[command(subcommand)]
     command: Commands,
     /// Interval to wait after reaping resources.
-    #[arg(long, value_name = "duration", value_parser = parse_duration, default_value = "60s")]
+    #[arg(long, value_name = "duration", value_parser = parse_duration, default_value = "60s", global = true)]
     every: Duration,
     /// Only reap resources once. Conflicts with "--every".
-    #[arg(long, conflicts_with = "every")]
+    #[arg(long, conflicts_with = "every", global = true)]
     once: bool,
     /// Log output without actually removing resources.
-    #[arg(long, short = 'd')]
+    #[arg(long, short = 'd', global = true)]
     dry_run: bool,
 }
 
