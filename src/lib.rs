@@ -49,6 +49,22 @@ pub struct Filter {
     value: String,
 }
 
+trait BollardConversionExt {
+    /// Converts the iterator into the format expected by `bollard` filter arguments.
+    ///
+    /// The values of all items sharing the same key are combined into a single Vec.
+    fn to_bollard_filters(&self) -> HashMap<String, Vec<String>> where Self: IntoIterator;
+}
+
+impl BollardConversionExt for Vec<Filter> {
+    fn to_bollard_filters(&self) -> HashMap<String, Vec<String>> {
+        self.iter().fold(HashMap::new(), |mut acc, f| {
+            acc.entry(f.name.clone()).or_default().push(f.value.clone());
+            acc
+        })
+    }
+}
+
 impl Filter {
     pub fn new(name: &str, value: &str) -> Self {
         Self {
@@ -170,14 +186,7 @@ pub async fn reap_containers(
     let eligible_containers = docker
         .list_containers(Some(ListContainersOptions {
             all: true,
-            filters: {
-                // Flatten any filter values with the same key into vecs to match
-                // bollard::container::ListContainersOptions format ([a=b, a=c] => [a=[b, c]])
-                config.filters.iter().fold(HashMap::new(), |mut acc, f| {
-                    acc.entry(f.name.clone()).or_default().push(f.value.clone());
-                    acc
-                })
-            },
+            filters: config.filters.to_bollard_filters(),
             ..Default::default()
         }))
         .await?
