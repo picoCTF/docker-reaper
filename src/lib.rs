@@ -7,6 +7,7 @@ use tabled::Tabled;
 use thiserror::Error;
 use tokio::time::Duration;
 use tracing::debug;
+use tracing::warn;
 
 #[derive(Debug)]
 pub struct ReapContainersConfig<'a> {
@@ -53,7 +54,9 @@ trait BollardConversionExt {
     /// Converts the iterator into the format expected by `bollard` filter arguments.
     ///
     /// The values of all items sharing the same key are combined into a single Vec.
-    fn to_bollard_filters(&self) -> HashMap<String, Vec<String>> where Self: IntoIterator;
+    fn to_bollard_filters(&self) -> HashMap<String, Vec<String>>
+    where
+        Self: IntoIterator;
 }
 
 impl BollardConversionExt for Vec<Filter> {
@@ -150,7 +153,7 @@ impl Resource {
                     }
                     Err(e) => self.status = RemovalStatus::Error(RemovalError::Docker(e)),
                 };
-            },
+            }
             ResourceType::Volume => todo!(),
         }
     }
@@ -168,8 +171,8 @@ pub enum RemovalError {
 pub enum ReapError {
     #[error(transparent)]
     Docker(#[from] bollard::errors::Error),
-    #[error("Current system time is before UNIX epoch")]
-    InvalidSystemTime,
+    #[error(transparent)]
+    InvalidSystemTime(#[from] std::time::SystemTimeError),
     #[error(transparent)]
     TaskError(#[from] tokio::task::JoinError),
 }
@@ -178,34 +181,51 @@ pub async fn reap_containers(
     docker: &Docker,
     config: &ReapContainersConfig<'_>,
 ) -> Result<Vec<Resource>, ReapError> {
-    let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(d) => d,
-        Err(_) => return Err(ReapError::InvalidSystemTime),
-    };
-
-    let eligible_containers = docker
+    // Collect eligible containers. Since there's no way to ask the Docker API for containers
+    // matching a certain age range directly, we first obtain the full list based only on the
+    // provided filter values (if any).
+    let mut eligible_containers = docker
         .list_containers(Some(ListContainersOptions {
             all: true,
             filters: config.filters.to_bollard_filters(),
             ..Default::default()
         }))
-        .await?
-        .into_iter()
-        .filter(|c| {
-            (config.max_age.is_none() && config.min_age.is_none()) || {
-                if let Some(creation_secs) = c.created {
-                    let creation_secs: u64 = match creation_secs.try_into() {
-                        Ok(s) => s,
-                        Err(_) => return false,
-                    };
-                    let age = now - Duration::from_secs(creation_secs);
-                    return age > config.min_age.unwrap_or(Duration::ZERO)
-                        && age < config.max_age.unwrap_or(Duration::MAX);
-                } else {
-                    false
+        .await?;
+
+    // Reduce the eligible containers to only those within the specified age range (if applicable).
+    if config.max_age.is_some() || config.min_age.is_some() {
+        let now: Duration = SystemTime::now().duration_since(UNIX_EPOCH)?;
+        eligible_containers.retain(|container| {
+            let id = container.id.as_deref().unwrap_or("unknown ID");
+            // The creation time for containers is returned as a signed UNIX timestamp, but we need
+            // to convert it to an unsigned value to use `Duration::from_secs()`. If, for some
+            // reason, the returned creation time is missing or negative, skip the container.
+            let Some(creation_secs) = container.created else {
+                warn!("Skipping container ({}): missing creation timestamp", id);
+                return false
+            };
+            let creation_secs: u64 = match creation_secs.try_into() {
+                Ok(secs) => secs,
+                Err(_) => {
+                    warn!("Skipping container ({}): negative creation timestamp", id);
+                    return false;
                 }
+            };
+            let Some(age) = now.checked_sub(Duration::from_secs(creation_secs)) else {
+                warn!("Skipping container ({}): creation timestamp after system time", id);
+                return false
+            };
+            let within_age_range = age > config.min_age.unwrap_or(Duration::ZERO)
+                && age < config.max_age.unwrap_or(Duration::MAX);
+            if !within_age_range {
+                debug!(
+                    "Skipping container ({}): age outside of specified range",
+                    id
+                );
             }
+            within_age_range
         });
+    }
 
     let mut eligible_networks = HashSet::new();
     let mut eligible_resources: Vec<Resource> = Vec::new();

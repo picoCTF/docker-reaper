@@ -26,7 +26,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Reaps matching expired containers.
+    /// Reaps matching containers.
     Containers(ContainersArgs),
 }
 
