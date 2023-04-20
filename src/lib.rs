@@ -1,13 +1,13 @@
-use bollard::container::RemoveContainerOptions;
-use bollard::{container::ListContainersOptions, Docker};
+use bollard::container::{ListContainersOptions, RemoveContainerOptions};
+use bollard::network::ListNetworksOptions;
+use bollard::Docker;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tabled::Tabled;
 use thiserror::Error;
 use tokio::time::Duration;
-use tracing::debug;
-use tracing::warn;
+use tracing::{debug, warn};
 
 #[derive(Debug)]
 pub struct ReapContainersConfig<'a> {
