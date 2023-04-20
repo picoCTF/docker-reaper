@@ -38,7 +38,7 @@ impl fmt::Display for RemovalStatus {
         match self {
             Self::Eligible => write!(f, "Eligible for removal"),
             Self::Success => write!(f, "Removed"),
-            Self::Error(e) => write!(f, "Error: {}", e.to_string()),
+            Self::Error(e) => write!(f, "Error: {}", e),
         }
     }
 }
@@ -238,7 +238,7 @@ pub async fn reap_containers(
                 .names
                 .unwrap_or_default()
                 .first()
-                .unwrap_or_else(|| &id)
+                .unwrap_or(&id)
                 .clone(),
             status: RemovalStatus::Eligible,
         });
@@ -271,11 +271,11 @@ pub async fn reap_containers(
     for mut resource in eligible_resources {
         match resource.resource_type {
             ResourceType::Container => container_futures.push(async move {
-                resource.remove(&docker).await;
+                resource.remove(docker).await;
                 resource
             }),
             ResourceType::Network => network_futures.push(async move {
-                resource.remove(&docker).await;
+                resource.remove(docker).await;
                 resource
             }),
             _ => {}
@@ -283,5 +283,7 @@ pub async fn reap_containers(
     }
     let mut removed_resources = futures::future::join_all(container_futures).await;
     removed_resources.extend(futures::future::join_all(network_futures).await);
-    return Ok(removed_resources);
+    Ok(removed_resources)
+}
+
 }

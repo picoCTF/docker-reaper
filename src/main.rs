@@ -91,10 +91,7 @@ async fn main() -> Result<(), anyhow::Error> {
     };
 
     if let Some(duration) = global_args.every {
-        info!(
-            "Reaping resources every {} seconds",
-            duration.as_secs()
-        );
+        info!("Reaping resources every {} seconds", duration.as_secs());
     } else {
         info!("Reaping resources once");
     }
