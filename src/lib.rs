@@ -29,6 +29,8 @@ enum RemovalStatus {
     Eligible,
     /// Resource was successfully removed.
     Success,
+    /// Removal was already in progress.
+    InProgress,
     /// An error occurred when attempting to remove this resource.
     Error(RemovalError),
 }
@@ -38,6 +40,7 @@ impl fmt::Display for RemovalStatus {
         match self {
             Self::Eligible => write!(f, "Eligible for removal"),
             Self::Success => write!(f, "Removed"),
+            &Self::InProgress => write!(f, "Removal in progress"),
             Self::Error(e) => write!(f, "Error: {}", e),
         }
     }
@@ -130,11 +133,17 @@ impl Resource {
                         self.status = RemovalStatus::Success;
                     }
                     Err(bollard::errors::Error::DockerResponseServerError {
-                        status_code: 404 | 409,
+                        status_code: 404,
                         ..
                     }) => {
-                        // Mark as successful if already removed (404) or removal in progress (409)
+                        // Mark as successful if already removed (404)
                         self.status = RemovalStatus::Success;
+                    }
+                    Err(bollard::errors::Error::DockerResponseServerError {
+                        status_code: 409,
+                        ..
+                    }) => {
+                        self.status = RemovalStatus::InProgress;
                     }
                     Err(e) => self.status = RemovalStatus::Error(RemovalError::Docker(e)),
                 };
@@ -145,11 +154,17 @@ impl Resource {
                         self.status = RemovalStatus::Success;
                     }
                     Err(bollard::errors::Error::DockerResponseServerError {
-                        status_code: 404 | 409,
+                        status_code: 404,
                         ..
                     }) => {
-                        // Mark as successful if already removed (404) or removal in progress (409)
+                        // Mark as successful if already removed (404)
                         self.status = RemovalStatus::Success;
+                    }
+                    Err(bollard::errors::Error::DockerResponseServerError {
+                        status_code: 409,
+                        ..
+                    }) => {
+                        self.status = RemovalStatus::InProgress;
                     }
                     Err(e) => self.status = RemovalStatus::Error(RemovalError::Docker(e)),
                 };
