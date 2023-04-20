@@ -201,63 +201,64 @@ pub async fn reap_containers(
             // to convert it to an unsigned value to use `Duration::from_secs()`. If, for some
             // reason, the returned creation time is missing or negative, skip the container.
             let Some(creation_secs) = container.created else {
-                warn!("Skipping container ({}): missing creation timestamp", id);
+                warn!("Skipped container ({}): missing creation timestamp", id);
                 return false
             };
             let creation_secs: u64 = match creation_secs.try_into() {
                 Ok(secs) => secs,
                 Err(_) => {
-                    warn!("Skipping container ({}): negative creation timestamp", id);
+                    warn!("Skipped container ({}): negative creation timestamp", id);
                     return false;
                 }
             };
             let Some(age) = now.checked_sub(Duration::from_secs(creation_secs)) else {
-                warn!("Skipping container ({}): creation timestamp after system time", id);
+                warn!("Skipped container {}: creation timestamp after system time", id);
                 return false
             };
             let within_age_range = age > config.min_age.unwrap_or(Duration::ZERO)
                 && age < config.max_age.unwrap_or(Duration::MAX);
             if !within_age_range {
-                debug!(
-                    "Skipping container ({}): age outside of specified range",
-                    id
-                );
+                debug!("Skipped container {}: age outside of specified range", id);
             }
             within_age_range
         });
     }
 
-    let mut eligible_networks = HashSet::new();
+    let mut eligible_network_names = HashSet::new();
     let mut eligible_resources: Vec<Resource> = Vec::new();
     for container in eligible_containers {
-        if let Some(id) = container.id {
-            if config.reap_networks {
-                if let Some(network_settings) = container.network_settings {
-                    if let Some(networks) = network_settings.networks {
-                        // Docker has network IDs, but also requires each network to have a unique
-                        // name. We just use names as IDs since they're easier to retrieve.
-                        eligible_networks.extend(networks.keys().cloned())
-                    }
+        let Some(id) = container.id else {
+            warn!("Skipped container (unknown ID): missing ID value");
+            continue
+        };
+        eligible_resources.push(Resource {
+            resource_type: ResourceType::Container,
+            id: id.clone(),
+            name: container
+                .names
+                .unwrap_or_default()
+                .first()
+                .unwrap_or_else(|| &id)
+                .clone(),
+            status: RemovalStatus::Eligible,
+        });
+        if config.reap_networks {
+            if let Some(network_settings) = container.network_settings {
+                if let Some(networks) = network_settings.networks {
+                    // Docker has network IDs, but also requires each network to have a unique
+                    // name. We just use the name as an ID since it's easier to retrieve.
+                    eligible_network_names.extend(networks.keys().cloned().inspect(|name| {
+                        debug!("Added network {} from container {} ", name, id);
+                    }))
                 }
             }
-            eligible_resources.push(Resource {
-                resource_type: ResourceType::Container,
-                id: id.clone(),
-                name: container
-                    .names
-                    .unwrap_or_default()
-                    .first()
-                    .unwrap_or_else(|| &id)
-                    .clone(),
-                status: RemovalStatus::Eligible,
-            });
         }
     }
-    for network in eligible_networks {
+    for network_name in eligible_network_names {
         eligible_resources.push(Resource {
             resource_type: ResourceType::Network,
-            id: network.clone(),
-            name: network.clone(),
+            id: network_name.clone(),
+            name: network_name.clone(),
             status: RemovalStatus::Eligible,
         })
     }
@@ -277,7 +278,7 @@ pub async fn reap_containers(
                 resource.remove(&docker).await;
                 resource
             }),
-            _ => unreachable!(),
+            _ => {}
         }
     }
     let mut removed_resources = futures::future::join_all(container_futures).await;
