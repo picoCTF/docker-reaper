@@ -24,6 +24,18 @@ pub struct ReapContainersConfig<'a> {
 }
 
 #[derive(Debug)]
+pub struct ReapNetworksConfig<'a> {
+    /// Return results without actually removing networks.
+    pub dry_run: bool,
+    /// Only networks older than this duration will be eligible for reaping.
+    pub min_age: Option<Duration>,
+    /// Only networks younger than this duration will be eligible for reaping.
+    pub max_age: Option<Duration>,
+    /// Additional Docker Engine-supported [network filters](https://docs.docker.com/engine/reference/commandline/network_ls/#filter).
+    pub filters: &'a Vec<Filter>,
+}
+
+#[derive(Debug)]
 enum RemovalStatus {
     /// Used in dry-run mode to indicate that a resource is eligible for removal.
     Eligible,
@@ -222,13 +234,13 @@ pub async fn reap_containers(
             // to convert it to an unsigned value to use `Duration::from_secs()`. If, for some
             // reason, the returned creation time is missing or negative, skip the container.
             let Some(creation_secs) = container.created else {
-                warn!("Skipped container ({}): missing creation timestamp", id);
+                warn!("Skipped container {}: missing creation timestamp", id);
                 return false
             };
             let creation_secs: u64 = match creation_secs.try_into() {
                 Ok(secs) => secs,
                 Err(_) => {
-                    warn!("Skipped container ({}): negative creation timestamp", id);
+                    warn!("Skipped container {}: negative creation timestamp", id);
                     return false;
                 }
             };
@@ -307,4 +319,68 @@ pub async fn reap_containers(
     Ok(removed_resources)
 }
 
+pub async fn reap_networks(
+    docker: &Docker,
+    config: &ReapNetworksConfig<'_>,
+) -> Result<Vec<Resource>, ReapError> {
+    if config.min_age.unwrap_or(Duration::ZERO) >= config.max_age.unwrap_or(Duration::MAX) {
+        return Err(ReapError::InvalidAgeBound);
+    }
+
+    let mut eligible_networks = docker
+        .list_networks(Some(ListNetworksOptions {
+            filters: config.filters.to_bollard_filters(),
+        }))
+        .await?;
+
+    if config.max_age.is_some() || config.min_age.is_some() {
+        eligible_networks.retain(|network| {
+            let Some(ref name) = network.name else {
+                warn!("Skipped network (unknown name): missing name value");
+                return false
+            };
+            let Some(ref creation_timestamp) = network.created else {
+                warn!("Skipped network {}: missing creation timestamp", name);
+                return false
+            };
+            let Ok(creation_time) = chrono::DateTime::parse_from_rfc3339(creation_timestamp) else {
+                warn!("Skipped network {}: failed to parse creation timestamp as RFC3339", name);
+                return false
+            };
+            let Ok(age) = creation_time.signed_duration_since(chrono::Utc::now()).to_std() else {
+                warn!("Skipped network {}: creation timestamp after system time", name);
+                return false
+            };
+            let within_age_range = age > config.min_age.unwrap_or(Duration::ZERO)
+                && age < config.max_age.unwrap_or(Duration::MAX);
+            if !within_age_range {
+                debug!("Skipped network {}: age outside of specified range", name);
+            }
+            within_age_range
+        });
+    }
+    let eligible_networks: Vec<Resource> = eligible_networks
+        .into_iter()
+        .filter_map(|network| {
+            let Some(name) = network.name else {
+            warn!("Skipped network (unknown name): missing name value");
+            return None
+        };
+            Some(Resource {
+                resource_type: ResourceType::Network,
+                id: name.clone(),
+                name,
+                status: RemovalStatus::Eligible,
+            })
+        })
+        .collect();
+    if config.dry_run {
+        return Ok(eligible_networks);
+    }
+    let network_futures = eligible_networks.into_iter().map(|mut network| async move {
+        network.remove(docker).await;
+        network
+    });
+    let removed_networks = futures::future::join_all(network_futures).await;
+    Ok(removed_networks)
 }

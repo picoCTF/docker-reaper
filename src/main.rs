@@ -4,7 +4,9 @@ use tracing::{debug, error, info, warn};
 
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
-use docker_reaper::{reap_containers, reap_networks, Docker, Filter, ReapContainersConfig, ReapNetworksConfig};
+use docker_reaper::{
+    reap_containers, reap_networks, Docker, Filter, ReapContainersConfig, ReapNetworksConfig,
+};
 use tokio::time::{sleep, Duration};
 
 #[derive(Debug, Parser)]
@@ -12,7 +14,7 @@ use tokio::time::{sleep, Duration};
 struct Cli {
     #[command(subcommand)]
     command: Commands,
-    /// Interval to wait after reaping resources.
+    /// Run repeatedly, waiting this long between removal attempts.
     #[arg(long, value_name = "duration", value_parser = parse_duration, global = true)]
     every: Option<Duration>,
     /// Log output without actually removing resources.
@@ -22,8 +24,10 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Reaps matching containers.
+    /// Reap matching containers.
     Containers(ContainersArgs),
+    /// Reap matching networks.
+    Networks(NetworksArgs),
 }
 
 #[derive(Debug, Args)]
@@ -48,6 +52,26 @@ struct ContainersArgs {
     /// Also attempt to remove the networks associated with reaped containers.
     #[arg(long)]
     reap_networks: bool,
+}
+
+#[derive(Debug, Args)]
+#[command(after_help = "Note: <duration> values accept Go-style duration strings (e.g. 1m30s)")]
+struct NetworksArgs {
+    /// Only reap networks older than this duration.
+    #[arg(long, value_name = "duration", value_parser = parse_duration)]
+    min_age: Option<Duration>,
+    /// Only reap networks younger than this duration.
+    #[arg(long, value_name = "duration", value_parser = parse_duration)]
+    max_age: Option<Duration>,
+    #[arg(
+        name = "filter",
+        long,
+        short = 'f',
+        help = "Only reap networks matching a Docker Engine-supported filter (https://docs.docker.com/engine/reference/commandline/network_ls/#filter). Can be specified multiple times",
+        value_name = "name=value",
+        value_parser = parse_filter
+    )]
+    filters: Vec<Filter>,
 }
 
 fn parse_filter(value: &str) -> Result<Filter, anyhow::Error> {
@@ -110,6 +134,15 @@ async fn main() -> Result<(), anyhow::Error> {
                     reap_networks: args.reap_networks,
                 };
                 reap_containers(&docker, &config).await
+            }
+            Commands::Networks(ref args) => {
+                let config = ReapNetworksConfig {
+                    dry_run: global_args.dry_run,
+                    min_age: args.min_age,
+                    max_age: args.max_age,
+                    filters: &args.filters,
+                };
+                reap_networks(&docker, &config).await
             }
         };
         match result {
