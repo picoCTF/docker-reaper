@@ -174,13 +174,19 @@ pub enum ReapError {
     #[error(transparent)]
     InvalidSystemTime(#[from] std::time::SystemTimeError),
     #[error(transparent)]
-    TaskError(#[from] tokio::task::JoinError),
+    TaskFailure(#[from] tokio::task::JoinError),
+    #[error("min_age must be less than max_age")]
+    InvalidAgeBound,
 }
 
 pub async fn reap_containers(
     docker: &Docker,
     config: &ReapContainersConfig<'_>,
 ) -> Result<Vec<Resource>, ReapError> {
+    if config.min_age.unwrap_or(Duration::ZERO) >= config.max_age.unwrap_or(Duration::MAX) {
+        return Err(ReapError::InvalidAgeBound);
+    }
+
     // Collect eligible containers. Since there's no way to ask the Docker API for containers
     // matching a certain age range directly, we first obtain the full list based only on the
     // provided filter values (if any).
