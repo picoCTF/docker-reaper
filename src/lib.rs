@@ -1,6 +1,6 @@
 use bollard::container::{ListContainersOptions, RemoveContainerOptions};
 use bollard::network::ListNetworksOptions;
-use bollard::Docker;
+pub use bollard::Docker;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};

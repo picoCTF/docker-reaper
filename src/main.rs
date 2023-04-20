@@ -1,11 +1,10 @@
-use bollard::Docker;
 use std::env;
 use tabled::Table;
 use tracing::{debug, error, info, warn};
 
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
-use docker_reaper::{reap_containers, Filter, ReapContainersConfig};
+use docker_reaper::{reap_containers, reap_networks, Docker, Filter, ReapContainersConfig, ReapNetworksConfig};
 use tokio::time::{sleep, Duration};
 
 #[derive(Debug, Parser)]
