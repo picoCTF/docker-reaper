@@ -14,11 +14,8 @@ struct Cli {
     #[command(subcommand)]
     command: Commands,
     /// Interval to wait after reaping resources.
-    #[arg(long, value_name = "duration", value_parser = parse_duration, default_value = "60s", global = true)]
-    every: Duration,
-    /// Only reap resources once. Conflicts with "--every".
-    #[arg(long, conflicts_with = "every", global = true)]
-    once: bool,
+    #[arg(long, value_name = "duration", value_parser = parse_duration, global = true)]
+    every: Option<Duration>,
     /// Log output without actually removing resources.
     #[arg(long, short = 'd', global = true)]
     dry_run: bool,
@@ -93,13 +90,13 @@ async fn main() -> Result<(), anyhow::Error> {
         }
     };
 
-    if global_args.once {
-        info!("Reaping resources once");
-    } else {
+    if let Some(duration) = global_args.every {
         info!(
             "Reaping resources every {} seconds",
-            global_args.every.as_secs()
+            duration.as_secs()
         );
+    } else {
+        info!("Reaping resources once");
     }
 
     loop {
@@ -140,11 +137,11 @@ async fn main() -> Result<(), anyhow::Error> {
                 error!("{}", e.to_string());
             }
         }
-        if global_args.once {
-            break Ok(());
-        } else {
+        if let Some(duration) = global_args.every {
             debug!("Sleeping for {:?}", global_args.every);
-            sleep(global_args.every).await;
+            sleep(duration).await;
+        } else {
+            break Ok(());
         }
     }
 }
