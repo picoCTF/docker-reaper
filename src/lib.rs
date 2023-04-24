@@ -60,7 +60,7 @@ impl fmt::Display for RemovalStatus {
 }
 
 #[derive(Clone, Debug)]
-/// A Docker Engine filter (see https://docs.docker.com/engine/reference/commandline/ps/#filter)
+/// A Docker Engine filter (see <https://docs.docker.com/engine/reference/commandline/ps/#filter>)
 pub struct Filter {
     name: String,
     value: String,
