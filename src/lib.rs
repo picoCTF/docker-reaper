@@ -1,5 +1,6 @@
 use bollard::container::{ListContainersOptions, RemoveContainerOptions};
 use bollard::network::ListNetworksOptions;
+#[doc(no_inline)]
 pub use bollard::Docker;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
