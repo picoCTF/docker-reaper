@@ -1,19 +1,23 @@
 [package]
-name = "docker-reaper"
-version = "0.1.0"
+authors = ["Dustin Martin <dustin@dmartin.io>", "picoCTF Team <opensource@picoctf.org>"]
+description = "Command line tool for removing expired Docker resources"
 edition = "2021"
+license = "MIT OR Apache-2.0"
+name = "docker-reaper"
+repository = "https://github.com/picoCTF/docker-reaper"
+version = "0.1.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 anyhow = "1.0.69"
-bollard = { version = "0.14.0", features = ["ssl"] }
+bollard = {version = "0.14.0", features = ["ssl"]}
 chrono = "0.4.24"
-clap = { version = "4.1.8", features = ["derive"] }
+clap = {version = "4.1.8", features = ["derive"]}
 futures = "0.3.28"
 go-parse-duration = "0.1.1"
 tabled = "0.10.0"
 thiserror = "1.0.39"
-tokio = { version = "1.26.0", features = ["full"] }
+tokio = {version = "1.26.0", features = ["full"]}
 tracing = "0.1.37"
 tracing-subscriber = "0.3.16"
