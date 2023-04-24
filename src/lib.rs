@@ -134,6 +134,7 @@ impl Resource {
     /// `RemovalStatus::Error`.
     async fn remove(&mut self, docker: &Docker) {
         debug!("Removing {} {}", self.resource_type, self.name);
+        use bollard::errors::Error::DockerResponseServerError;
         match self.resource_type {
             ResourceType::Container => {
                 let options = RemoveContainerOptions {
@@ -144,16 +145,14 @@ impl Resource {
                     Ok(_) => {
                         self.status = RemovalStatus::Success;
                     }
-                    Err(bollard::errors::Error::DockerResponseServerError {
-                        status_code: 404,
-                        ..
+                    Err(DockerResponseServerError {
+                        status_code: 404, ..
                     }) => {
                         // Mark as successful if already removed (404)
                         self.status = RemovalStatus::Success;
                     }
-                    Err(bollard::errors::Error::DockerResponseServerError {
-                        status_code: 409,
-                        ..
+                    Err(DockerResponseServerError {
+                        status_code: 409, ..
                     }) => {
                         self.status = RemovalStatus::InProgress;
                     }
@@ -165,16 +164,14 @@ impl Resource {
                     Ok(_) => {
                         self.status = RemovalStatus::Success;
                     }
-                    Err(bollard::errors::Error::DockerResponseServerError {
-                        status_code: 404,
-                        ..
+                    Err(DockerResponseServerError {
+                        status_code: 404, ..
                     }) => {
                         // Mark as successful if already removed (404)
                         self.status = RemovalStatus::Success;
                     }
-                    Err(bollard::errors::Error::DockerResponseServerError {
-                        status_code: 409,
-                        ..
+                    Err(DockerResponseServerError {
+                        status_code: 409, ..
                     }) => {
                         self.status = RemovalStatus::InProgress;
                     }
