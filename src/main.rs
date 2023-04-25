@@ -5,7 +5,8 @@ use tracing::{debug, error, info, warn};
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
 use docker_reaper::{
-    reap_containers, reap_networks, Docker, Filter, ReapContainersConfig, ReapNetworksConfig,
+    reap_containers, reap_networks, reap_volumes, Docker, Filter, ReapContainersConfig,
+    ReapNetworksConfig, ReapVolumesConfig,
 };
 use tokio::time::{sleep, Duration};
 
@@ -28,6 +29,8 @@ enum Commands {
     Containers(ContainersArgs),
     /// Reap matching networks.
     Networks(NetworksArgs),
+    /// Reap matching volumes.
+    Volumes(VolumesArgs),
 }
 
 #[derive(Debug, Args)]
@@ -68,6 +71,26 @@ struct NetworksArgs {
         long,
         short = 'f',
         help = "Only reap networks matching a Docker Engine-supported filter (https://docs.docker.com/engine/reference/commandline/network_ls/#filter). Can be specified multiple times",
+        value_name = "name=value",
+        value_parser = parse_filter
+    )]
+    filters: Vec<Filter>,
+}
+
+#[derive(Debug, Args)]
+#[command(after_help = "Note: <duration> values accept Go-style duration strings (e.g. 1m30s)")]
+struct VolumesArgs {
+    /// Only reap volumes older than this duration.
+    #[arg(long, value_name = "duration", value_parser = parse_duration)]
+    min_age: Option<Duration>,
+    /// Only reap volumes younger than this duration.
+    #[arg(long, value_name = "duration", value_parser = parse_duration)]
+    max_age: Option<Duration>,
+    #[arg(
+        name = "filter",
+        long,
+        short = 'f',
+        help = "Only reap volumes matching a Docker Engine-supported filter (https://docs.docker.com/engine/reference/commandline/volume_ls/#filter). Can be specified multiple times",
         value_name = "name=value",
         value_parser = parse_filter
     )]
@@ -143,6 +166,15 @@ async fn main() -> Result<(), anyhow::Error> {
                     filters: &args.filters,
                 };
                 reap_networks(&docker, &config).await
+            }
+            Commands::Volumes(ref args) => {
+                let config = ReapVolumesConfig {
+                    dry_run: global_args.dry_run,
+                    min_age: args.min_age,
+                    max_age: args.max_age,
+                    filters: &args.filters,
+                };
+                reap_volumes(&docker, &config).await
             }
         };
         match result {

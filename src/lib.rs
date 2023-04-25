@@ -1,5 +1,7 @@
 use bollard::container::{ListContainersOptions, RemoveContainerOptions};
 use bollard::network::ListNetworksOptions;
+use bollard::service::VolumeListResponse;
+use bollard::volume::ListVolumesOptions;
 #[doc(no_inline)]
 pub use bollard::Docker;
 use std::collections::{HashMap, HashSet};
@@ -33,6 +35,18 @@ pub struct ReapNetworksConfig<'a> {
     /// Only networks younger than this duration will be eligible for reaping.
     pub max_age: Option<Duration>,
     /// Additional Docker Engine-supported [network filters](https://docs.docker.com/engine/reference/commandline/network_ls/#filter).
+    pub filters: &'a Vec<Filter>,
+}
+
+#[derive(Debug)]
+pub struct ReapVolumesConfig<'a> {
+    /// Return results without actually removing volumes.
+    pub dry_run: bool,
+    /// Only volumes older than this duration will be eligible for reaping.
+    pub min_age: Option<Duration>,
+    /// Only volumes younger than this duration will be eligible for reaping.
+    pub max_age: Option<Duration>,
+    /// Additional Docker Engine-supported [volume filters](https://docs.docker.com/engine/reference/commandline/volume_ls/#filter).
     pub filters: &'a Vec<Filter>,
 }
 
@@ -382,4 +396,73 @@ pub async fn reap_networks(
     });
     let removed_networks = futures::future::join_all(network_futures).await;
     Ok(removed_networks)
+}
+
+pub async fn reap_volumes(
+    docker: &Docker,
+    config: &ReapVolumesConfig<'_>,
+) -> Result<Vec<Resource>, ReapError> {
+    if config.min_age.unwrap_or(Duration::ZERO) >= config.max_age.unwrap_or(Duration::MAX) {
+        return Err(ReapError::InvalidAgeBound);
+    }
+
+    let VolumeListResponse {
+        volumes: eligible_volumes,
+        warnings,
+    } = docker
+        .list_volumes(Some(ListVolumesOptions {
+            filters: config.filters.to_bollard_filters(),
+        }))
+        .await?;
+    if let Some(warnings) = warnings {
+        for warning in warnings {
+            warn!("Encountered warning when listing volumes: {}", warning);
+        }
+    }
+    let Some(mut eligible_volumes) = eligible_volumes else {
+        debug!("No volumes returned");
+        return Ok(Vec::new());
+    };
+
+    if config.max_age.is_some() || config.min_age.is_some() {
+        let now = chrono::Utc::now();
+        eligible_volumes.retain(|volume| {
+            let Some(ref creation_timestamp) = volume.created_at else {
+                warn!("Skipped volume {}: missing creation timestamp", volume.name);
+                return false
+            };
+            let Ok(creation_time) = chrono::DateTime::parse_from_rfc3339(creation_timestamp) else {
+                warn!("Skipped volume {}: failed to parse creation timestamp as RFC3339", volume.name);
+                return false
+            };
+            let Ok(age) = now.signed_duration_since(creation_time).to_std() else {
+                warn!("Skipped volume {}: creation timestamp after system time", volume.name);
+                return false
+            };
+            let within_age_range = age > config.min_age.unwrap_or(Duration::ZERO)
+                && age < config.max_age.unwrap_or(Duration::MAX);
+            if !within_age_range {
+                debug!("Skipped volume {}: age outside of specified range", volume.name);
+            }
+            within_age_range
+        })
+    }
+    let eligible_volumes: Vec<Resource> = eligible_volumes
+        .into_iter()
+        .map(|volume| Resource {
+            resource_type: ResourceType::Volume,
+            id: volume.name.clone(),
+            name: volume.name,
+            status: RemovalStatus::Eligible,
+        })
+        .collect();
+    if config.dry_run {
+        return Ok(eligible_volumes);
+    }
+    let volume_futures = eligible_volumes.into_iter().map(|mut volume| async move {
+        volume.remove(docker).await;
+        volume
+    });
+    let removed_volumes = futures::future::join_all(volume_futures).await;
+    Ok(removed_volumes)
 }
