@@ -332,6 +332,7 @@ pub async fn reap_networks(
         .await?;
 
     if config.max_age.is_some() || config.min_age.is_some() {
+        let now = chrono::Utc::now();
         eligible_networks.retain(|network| {
             let Some(ref name) = network.name else {
                 warn!("Skipped network (unknown name): missing name value");
@@ -345,7 +346,7 @@ pub async fn reap_networks(
                 warn!("Skipped network {}: failed to parse creation timestamp as RFC3339", name);
                 return false
             };
-            let Ok(age) = creation_time.signed_duration_since(chrono::Utc::now()).to_std() else {
+            let Ok(age) = now.signed_duration_since(creation_time).to_std() else {
                 warn!("Skipped network {}: creation timestamp after system time", name);
                 return false
             };
