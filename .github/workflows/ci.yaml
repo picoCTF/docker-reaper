@@ -1,0 +1,45 @@
+# Runs tests and linters on pushes to main and PRs.
+name: CI
+
+on:
+  push:
+    branches:
+      - "main"
+    paths:
+      - "**.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/**"
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches:
+      - "main"
+    paths:
+      - "**.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/**"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: CI
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v2
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Set up Rust caching
+        uses: Swatinem/rust-cache@v2
+      - name: Run rustfmt
+        run: |
+          cargo fmt -- --check
+      - name: Run clippy
+        run: |
+          cargo clippy -- -D warnings
