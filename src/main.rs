@@ -143,7 +143,7 @@ async fn main() -> Result<(), anyhow::Error> {
     }
 
     loop {
-        info!("Starting new run ({})", chrono::Utc::now().to_rfc3339());
+        info!("Starting new run");
         if global_args.dry_run {
             warn!("Dry run: no resources will be removed");
         }
