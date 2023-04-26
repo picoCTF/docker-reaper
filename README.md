@@ -44,7 +44,7 @@ When removing containers, you can also attempt to remove all networks which were
 
 ```bash
 $ docker network create my-network
-$ docker run docker run -i -t --detach --net my-network --name my-container ubuntu bash
+$ docker run -i -t --detach --net my-network --name my-container ubuntu bash
 
 # Will remove both `my-container` and `my-network`
 $ docker-reaper containers --filter name=my-container --reap-networks
