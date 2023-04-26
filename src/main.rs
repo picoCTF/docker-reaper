@@ -11,7 +11,11 @@ use docker_reaper::{
 use tokio::time::{sleep, Duration};
 
 #[derive(Debug, Parser)]
-#[command(after_help = "Note: <duration> values accept Go-style duration strings (e.g. 1m30s)")]
+#[command(
+    about,
+    version,
+    after_help = "Note: <duration> values accept Go-style duration strings (e.g. 1m30s)"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
