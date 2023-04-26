@@ -1,5 +1,4 @@
 use std::env;
-use tabled::Table;
 use tracing::{debug, error, info, warn};
 
 use anyhow::Context;
@@ -185,15 +184,16 @@ async fn main() -> Result<(), anyhow::Error> {
             Ok(removed_resources) => {
                 info!("Found {} matching resources", removed_resources.len());
                 if !removed_resources.is_empty() {
+                    use tabled::{
+                        settings::{object::Columns, Modify, Style, Width},
+                        Table,
+                    };
                     let mut table = Table::new(removed_resources);
                     info!(
                         "\n{}",
                         table
-                            .with(tabled::Style::sharp())
-                            .with(
-                                tabled::Modify::new(tabled::object::Columns::last())
-                                    .with(tabled::Width::wrap(80))
-                            )
+                            .with(Style::sharp())
+                            .with(Modify::new(Columns::last()).with(Width::wrap(80)))
                             .to_string()
                     );
                 }
