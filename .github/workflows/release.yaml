@@ -1,0 +1,49 @@
+# Builds binaries and uploads them to a GitHub release when a v* tag is pushed.
+name: Publish release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  create-release:
+    name: Create release
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create-release.outputs.upload_url }}
+    steps:
+      - name: Create release
+        id: create-release
+        uses: softprops/action-gh-release@v1
+  build:
+    name: Build release binaries
+    runs-on: ${{ matrix.runner-os }}
+    needs: create-release
+    strategy:
+      matrix:
+        include:
+          - runner-os: ubuntu-20.04
+            rustc-target: "x86_64-unknown-linux-gnu"
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v2
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rustc-target }}
+      - name: Build
+        run: |
+          cargo build --release
+      - name: Create tarball
+        run: |
+          mkdir out
+          cp target/release/docker-reaper out/
+          cp README.md LICENSE-MIT LICENSE-APACHE CHANGELOG.md out/
+          cd out && tar czf docker-reaper-${suffix}.tar.gz *
+        env:
+          suffix: ${{ matrix.rustc-target }}
+      - name: Upload tarball
+        uses: softprops/action-gh-release@v1
+        with:
+          files: out/*.tar.gz
