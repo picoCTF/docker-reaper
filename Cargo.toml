@@ -10,7 +10,7 @@ version = "0.1.0"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anyhow = "1.0.71"
+anyhow = "1.0.72"
 bollard = {version = "0.14.0", features = ["ssl"]}
 chrono = {version = "0.4.26", default-features = false, features = ["std", "clock"]}
 clap = {version = "4.3.11", features = ["derive"]}
