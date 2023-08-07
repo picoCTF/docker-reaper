@@ -193,7 +193,25 @@ impl Resource {
                     Err(e) => self.status = RemovalStatus::Error(RemovalError::Docker(e)),
                 };
             }
-            ResourceType::Volume => todo!(),
+            ResourceType::Volume => {
+                match docker.remove_volume(&self.id, None).await {
+                    Ok(_) => {
+                        self.status = RemovalStatus::Success;
+                    }
+                    Err(DockerResponseServerError {
+                        status_code: 404, ..
+                    }) => {
+                        // Mark as successful if already removed (404)
+                        self.status = RemovalStatus::Success;
+                    }
+                    Err(DockerResponseServerError {
+                        status_code: 409, ..
+                    }) => {
+                        self.status = RemovalStatus::InProgress;
+                    }
+                    Err(e) => self.status = RemovalStatus::Error(RemovalError::Docker(e)),
+                }
+            }
         }
     }
 }
