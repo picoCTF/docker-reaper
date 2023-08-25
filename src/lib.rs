@@ -265,7 +265,7 @@ pub async fn reap_containers(
             // reason, the returned creation time is missing or negative, skip the container.
             let Some(creation_secs) = container.created else {
                 warn!("Skipped container {}: missing creation timestamp", id);
-                return false
+                return false;
             };
             let creation_secs: u64 = match creation_secs.try_into() {
                 Ok(secs) => secs,
@@ -275,8 +275,11 @@ pub async fn reap_containers(
                 }
             };
             let Some(age) = now.checked_sub(Duration::from_secs(creation_secs)) else {
-                warn!("Skipped container {}: creation timestamp after system time", id);
-                return false
+                warn!(
+                    "Skipped container {}: creation timestamp after system time",
+                    id
+                );
+                return false;
             };
             let within_age_range = age > config.min_age.unwrap_or(Duration::ZERO)
                 && age < config.max_age.unwrap_or(Duration::MAX);
@@ -292,7 +295,7 @@ pub async fn reap_containers(
     for container in eligible_containers {
         let Some(id) = container.id else {
             warn!("Skipped container (unknown ID): missing ID value");
-            continue
+            continue;
         };
         eligible_resources.push(Resource {
             resource_type: ResourceType::Container,
@@ -368,19 +371,25 @@ pub async fn reap_networks(
         eligible_networks.retain(|network| {
             let Some(ref name) = network.name else {
                 warn!("Skipped network (unknown name): missing name value");
-                return false
+                return false;
             };
             let Some(ref creation_timestamp) = network.created else {
                 warn!("Skipped network {}: missing creation timestamp", name);
-                return false
+                return false;
             };
             let Ok(creation_time) = chrono::DateTime::parse_from_rfc3339(creation_timestamp) else {
-                warn!("Skipped network {}: failed to parse creation timestamp as RFC3339", name);
-                return false
+                warn!(
+                    "Skipped network {}: failed to parse creation timestamp as RFC3339",
+                    name
+                );
+                return false;
             };
             let Ok(age) = now.signed_duration_since(creation_time).to_std() else {
-                warn!("Skipped network {}: creation timestamp after system time", name);
-                return false
+                warn!(
+                    "Skipped network {}: creation timestamp after system time",
+                    name
+                );
+                return false;
             };
             let within_age_range = age > config.min_age.unwrap_or(Duration::ZERO)
                 && age < config.max_age.unwrap_or(Duration::MAX);
@@ -394,9 +403,9 @@ pub async fn reap_networks(
         .into_iter()
         .filter_map(|network| {
             let Some(name) = network.name else {
-            warn!("Skipped network (unknown name): missing name value");
-            return None
-        };
+                warn!("Skipped network (unknown name): missing name value");
+                return None;
+            };
             Some(Resource {
                 resource_type: ResourceType::Network,
                 id: name.clone(),
@@ -447,20 +456,29 @@ pub async fn reap_volumes(
         eligible_volumes.retain(|volume| {
             let Some(ref creation_timestamp) = volume.created_at else {
                 warn!("Skipped volume {}: missing creation timestamp", volume.name);
-                return false
+                return false;
             };
             let Ok(creation_time) = chrono::DateTime::parse_from_rfc3339(creation_timestamp) else {
-                warn!("Skipped volume {}: failed to parse creation timestamp as RFC3339", volume.name);
-                return false
+                warn!(
+                    "Skipped volume {}: failed to parse creation timestamp as RFC3339",
+                    volume.name
+                );
+                return false;
             };
             let Ok(age) = now.signed_duration_since(creation_time).to_std() else {
-                warn!("Skipped volume {}: creation timestamp after system time", volume.name);
-                return false
+                warn!(
+                    "Skipped volume {}: creation timestamp after system time",
+                    volume.name
+                );
+                return false;
             };
             let within_age_range = age > config.min_age.unwrap_or(Duration::ZERO)
                 && age < config.max_age.unwrap_or(Duration::MAX);
             if !within_age_range {
-                debug!("Skipped volume {}: age outside of specified range", volume.name);
+                debug!(
+                    "Skipped volume {}: age outside of specified range",
+                    volume.name
+                );
             }
             within_age_range
         })
