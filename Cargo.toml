@@ -1,5 +1,8 @@
 [package]
-authors = ["Dustin Martin <dustin@dmartin.io>", "picoCTF Team <opensource@picoctf.org>"]
+authors = [
+    "Dustin Martin <dustin@dmartin.io>",
+    "picoCTF Team <opensource@picoctf.org>",
+]
 description = "Command line tool for removing expired Docker resources"
 edition = "2021"
 license = "MIT OR Apache-2.0"
@@ -11,13 +14,18 @@ version = "0.1.0"
 
 [dependencies]
 anyhow = "1.0.72"
-bollard = {version = "0.14.0", features = ["ssl"]}
-chrono = {version = "0.4.26", default-features = false, features = ["std", "clock"]}
-clap = {version = "4.3.19", features = ["derive"]}
+bollard = { git = "https://github.com/fussybeaver/bollard.git", rev = "302482f4da446d1e205d4db08b7d7f4567209180", features = [
+    "ssl",
+] }
+chrono = { version = "0.4.26", default-features = false, features = [
+    "std",
+    "clock",
+] }
+clap = { version = "4.3.19", features = ["derive"] }
 futures = "0.3.28"
 go-parse-duration = "0.1.1"
 tabled = "0.14.0"
 thiserror = "1.0.44"
-tokio = {version = "1.29.1", features = ["full"]}
+tokio = { version = "1.29.1", features = ["full"] }
 tracing = "0.1.37"
 tracing-subscriber = "0.3.17"
