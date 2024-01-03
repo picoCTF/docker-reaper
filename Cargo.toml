@@ -13,7 +13,7 @@ version = "0.1.0"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anyhow = "1.0.75"
+anyhow = "1.0.79"
 bollard = { version = "0.15.0", features = ["ssl"] }
 chrono = { version = "0.4.31", default-features = false, features = [
     "std",
@@ -22,8 +22,8 @@ chrono = { version = "0.4.31", default-features = false, features = [
 clap = { version = "4.4.12", features = ["derive"] }
 futures = "0.3.30"
 go-parse-duration = "0.1.1"
-tabled = "0.14.0"
-thiserror = "1.0.53"
+tabled = "0.15.0"
+thiserror = "1.0.56"
 tokio = { version = "1.35.1", features = ["full"] }
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
