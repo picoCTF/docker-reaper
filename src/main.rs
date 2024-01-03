@@ -185,7 +185,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 info!("Found {} matching resources", removed_resources.len());
                 if !removed_resources.is_empty() {
                     use tabled::{
-                        settings::{object::Columns, Modify, Style, Width},
+                        settings::{object::Columns, Style, Width},
                         Table,
                     };
                     let mut table = Table::new(removed_resources);
@@ -193,7 +193,7 @@ async fn main() -> Result<(), anyhow::Error> {
                         "\n{}",
                         table
                             .with(Style::sharp())
-                            .with(Modify::new(Columns::last()).with(Width::wrap(80)))
+                            .modify(Columns::last(), Width::wrap(80))
                             .to_string()
                     );
                 }
