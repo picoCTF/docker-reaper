@@ -23,8 +23,14 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner-os: ubuntu-22.04
+          - runner-os: ubuntu-latest
             rustc-target: "x86_64-unknown-linux-gnu"
+          - runner-os: ubuntu-latest
+            rustc-target: "aarch64-unknown-linux-gnu"
+          - runner-os: macos-latest
+            rustc-target: "x86_64-apple-darwin"
+          - runner-os: macos-latest
+            rustc-target: "aarch64-apple-darwin"
     steps:
       - name: Checkout repo
         uses: actions/checkout@v2
