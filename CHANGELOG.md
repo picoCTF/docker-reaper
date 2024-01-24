@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v0.1.3
+
+- Dependency updates.
+
 ## v0.1.2
 
 - Dependency updates.
