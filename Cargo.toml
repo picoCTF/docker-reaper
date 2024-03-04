@@ -15,7 +15,7 @@ version = "0.1.0"
 [dependencies]
 anyhow = "1.0.80"
 bollard = { version = "0.15.0", features = ["ssl"] }
-chrono = { version = "0.4.33", default-features = false, features = [
+chrono = { version = "0.4.34", default-features = false, features = [
     "std",
     "clock",
 ] }
