@@ -51,7 +51,7 @@ pub struct ReapVolumesConfig<'a> {
 }
 
 #[derive(Debug)]
-enum RemovalStatus {
+pub enum RemovalStatus {
     /// Used in dry-run mode to indicate that a resource is eligible for removal.
     Eligible,
     /// Resource was successfully removed.
@@ -108,7 +108,7 @@ impl Filter {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum ResourceType {
+pub enum ResourceType {
     Container,
     Network,
     #[allow(dead_code)]
@@ -135,12 +135,18 @@ impl fmt::Display for ResourceType {
 #[tabled(rename_all = "PascalCase")]
 pub struct Resource {
     #[tabled(rename = "Resource Type")]
-    resource_type: ResourceType,
+    pub resource_type: ResourceType,
     #[tabled(skip)]
     #[allow(dead_code)]
-    id: String,
-    name: String,
-    status: RemovalStatus,
+    pub id: String,
+    pub name: String,
+    pub status: RemovalStatus,
+}
+
+impl PartialEq for Resource {
+    fn eq(&self, other: &Self) -> bool {
+        self.resource_type == other.resource_type && self.id == other.id
+    }
 }
 
 impl Resource {
