@@ -2,8 +2,9 @@
 #![allow(dead_code)]
 
 use bollard::container::{Config, NetworkingConfig};
+use bollard::image::CreateImageOptions;
 use bollard::network::CreateNetworkOptions;
-use bollard::secret::{ContainerCreateResponse, EndpointSettings, NetworkCreateResponse};
+use bollard::secret::{ContainerCreateResponse, EndpointSettings};
 use bollard::Docker;
 use chrono::Utc;
 use docker_reaper::{
@@ -59,6 +60,16 @@ pub(crate) async fn run_container(
         network_id = Some(name);
     }
 
+    // Ensure busybox image is present on host
+    _ = client.create_image(
+        Some(CreateImageOptions {
+            from_image: "busybox",
+            ..Default::default()
+        }),
+        None,
+        None,
+    );
+
     let ContainerCreateResponse {
         id: container_id, ..
     } = client
@@ -66,8 +77,8 @@ pub(crate) async fn run_container(
             None,
             Config {
                 tty: Some(true),
-                cmd: Some(vec![String::from("bash")]),
-                image: Some("ubuntu".to_string()),
+                cmd: Some(vec![String::from("sh")]),
+                image: Some("busybox".to_string()),
                 labels: Some(labels),
                 networking_config: {
                     if with_network {
