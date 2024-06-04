@@ -13,6 +13,7 @@ use docker_reaper::{
 };
 use std::collections::HashMap;
 use std::sync::OnceLock;
+use tokio_stream::StreamExt;
 
 /// A label set on all test-created Docker resources.
 pub(crate) const TEST_LABEL: &str = "docker-reaper-test";
@@ -38,6 +39,8 @@ pub(crate) async fn run_container(
     with_network: bool,
     extra_labels: Option<HashMap<String, String>>,
 ) -> RunContainerResult {
+    static TEST_IMAGE: &'static str = "busybox:latest";
+
     let client = docker_client();
     let mut labels = HashMap::from([(TEST_LABEL.to_string(), "true".to_string())]);
     if let Some(extra_labels) = extra_labels {
@@ -60,15 +63,20 @@ pub(crate) async fn run_container(
         network_id = Some(name);
     }
 
-    // Ensure busybox image is present on host
-    _ = client.create_image(
-        Some(CreateImageOptions {
-            from_image: "busybox",
-            ..Default::default()
-        }),
-        None,
-        None,
-    );
+    // Ensure test image is present on host
+    if client.inspect_image(&TEST_IMAGE).await.is_err() {
+        let mut pull_results_stream = client.create_image(
+            Some(CreateImageOptions {
+                from_image: TEST_IMAGE,
+                ..Default::default()
+            }),
+            None,
+            None,
+        );
+        while let Some(result) = pull_results_stream.next().await {
+            result.expect("failed to pull test image");
+        }
+    }
 
     let ContainerCreateResponse {
         id: container_id, ..
@@ -77,8 +85,8 @@ pub(crate) async fn run_container(
             None,
             Config {
                 tty: Some(true),
-                cmd: Some(vec![String::from("sh")]),
-                image: Some("busybox".to_string()),
+                cmd: None,
+                image: Some(TEST_IMAGE.to_string()),
                 labels: Some(labels),
                 networking_config: {
                     if with_network {
