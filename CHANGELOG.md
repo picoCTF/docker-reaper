@@ -1,19 +1,22 @@
 # Changelog
 
-## Unreleased
+## v1.0.0
+
+- Added integration tests.
+- Updated dependencies.
 
 ## v0.1.3
 
-- Dependency updates.
+- Updated dependencies.
 
 ## v0.1.2
 
-- Dependency updates.
+- Updated dependencies.
 
 ## v0.1.1
 
-- Fixes volume removal.
-- Dependency updates.
+- Fixed volume removal.
+- Updated dependencies.
 
 ## v0.1.0
 
