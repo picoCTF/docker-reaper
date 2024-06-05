@@ -167,13 +167,13 @@ async fn dry_run() {
     assert!(result.contains(&Resource {
         resource_type: ResourceType::Container,
         id: container_id.clone(),
-        name: String::new(), // not relevant to PartialEq impl
+        name: String::new(),
         status: RemovalStatus::Eligible,
     }));
     assert!(result.contains(&Resource {
         resource_type: ResourceType::Network,
         id: network_id.clone().expect("network ID not present"),
-        name: String::new(), // not relevant to PartialEq impl
+        name: String::new(),
         status: RemovalStatus::Eligible,
     }));
     assert_eq!(

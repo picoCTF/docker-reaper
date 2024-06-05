@@ -43,25 +43,10 @@ pub(crate) async fn run_container(
 
     let client = docker_client();
     let mut labels = HashMap::from([(TEST_LABEL.to_string(), "true".to_string())]);
-    if let Some(extra_labels) = extra_labels {
-        labels.extend(extra_labels.into_iter())
+    if let Some(ref extra_labels) = extra_labels {
+        labels.extend(extra_labels.clone().into_iter())
     }
     let mut network_id = None;
-    if with_network {
-        let name = Utc::now().timestamp_millis().to_string(); // network names must be unique
-        client
-            .create_network(CreateNetworkOptions {
-                name: name.clone(),
-                labels: labels.clone(),
-                ..Default::default()
-            })
-            .await
-            .expect("failed to create network");
-        // We use names rather than actual IDs to uniquely identify networks in docker-reaper
-        // because they are more meaningful in the user-facing output. Docker's handling of network
-        // names vs. IDs is strange - they can effectively be used interchangably.
-        network_id = Some(name);
-    }
 
     // Ensure test image is present on host
     if client.inspect_image(&TEST_IMAGE).await.is_err() {
@@ -90,6 +75,7 @@ pub(crate) async fn run_container(
                 labels: Some(labels),
                 networking_config: {
                     if with_network {
+                        network_id = Some(create_network(extra_labels.clone()).await);
                         Some(NetworkingConfig {
                             endpoints_config: HashMap::from([(
                                 "docker-reaper-test-network".to_string(),
@@ -116,6 +102,29 @@ pub(crate) async fn run_container(
         container_id,
         network_id,
     }
+}
+
+/// Create a network on the local Docker daemon. Returns the name of the created network.
+/// The label [TEST_LABEL] will always be set. Additional labels may also be specified.
+pub(crate) async fn create_network(extra_labels: Option<HashMap<String, String>>) -> String {
+    let client = docker_client();
+    let mut labels = HashMap::from([(TEST_LABEL.to_string(), "true".to_string())]);
+    if let Some(extra_labels) = extra_labels {
+        labels.extend(extra_labels.into_iter())
+    }
+    let name = Utc::now().timestamp_millis().to_string(); // network names must be unique
+    client
+        .create_network(CreateNetworkOptions {
+            name: name.clone(),
+            labels,
+            ..Default::default()
+        })
+        .await
+        .expect("failed to create network");
+    // We use names rather than actual IDs to uniquely identify networks in docker-reaper
+    // because they are more meaningful in the user-facing output. Docker's handling of network
+    // names vs. IDs is strange - they can effectively be used interchangably.
+    name
 }
 
 /// Check whether a container with the given ID exists.
