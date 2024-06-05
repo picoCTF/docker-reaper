@@ -5,6 +5,7 @@ use bollard::container::{Config, NetworkingConfig};
 use bollard::image::CreateImageOptions;
 use bollard::network::CreateNetworkOptions;
 use bollard::secret::{ContainerCreateResponse, EndpointSettings};
+use bollard::volume::CreateVolumeOptions;
 use bollard::Docker;
 use chrono::Utc;
 use docker_reaper::{
@@ -127,6 +128,26 @@ pub(crate) async fn create_network(extra_labels: Option<HashMap<String, String>>
     name
 }
 
+/// Create a volume on the local Docker daemon. Returns the name of the created volume.
+/// The label [TEST_LABEL] will always be set. Additional labels may also be specified.
+pub(crate) async fn create_volume(extra_labels: Option<HashMap<String, String>>) -> String {
+    let client = docker_client();
+    let mut labels = HashMap::from([(TEST_LABEL.to_string(), "true".to_string())]);
+    if let Some(extra_labels) = extra_labels {
+        labels.extend(extra_labels.into_iter())
+    }
+    let name = Utc::now().timestamp_millis().to_string(); // volume names must be unique
+    client
+        .create_volume(CreateVolumeOptions {
+            name: name.clone(),
+            labels,
+            ..Default::default()
+        })
+        .await
+        .expect("failed to create volume");
+    name
+}
+
 /// Check whether a container with the given ID exists.
 pub(crate) async fn container_exists(id: &str) -> bool {
     let client = docker_client();
@@ -141,10 +162,24 @@ pub(crate) async fn container_exists(id: &str) -> bool {
     }
 }
 
-/// Check whether a network with the given ID exists.
-pub(crate) async fn network_exists(id: &str) -> bool {
+/// Check whether a network with the given name exists.
+pub(crate) async fn network_exists(name: &str) -> bool {
     let client = docker_client();
-    match client.inspect_network::<&str>(id, None).await {
+    match client.inspect_network::<&str>(name, None).await {
+        Ok(_) => return true,
+        Err(err) => match err {
+            bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            } => return false,
+            _ => panic!("unexpected error: {err}"),
+        },
+    }
+}
+
+/// Check whether a volume with the given name exists.
+pub(crate) async fn volume_exists(name: &str) -> bool {
+    let client = docker_client();
+    match client.inspect_volume(name).await {
         Ok(_) => return true,
         Err(err) => match err {
             bollard::errors::Error::DockerResponseServerError {

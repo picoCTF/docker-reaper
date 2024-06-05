@@ -1,4 +1,4 @@
-//! Network reaping tests.
+//! Volume reaping tests.
 //!
 //! These are run serially because all test-related resources are cleaned up after each test.
 
@@ -6,23 +6,23 @@ mod common;
 
 use std::collections::HashMap;
 
-use common::{cleanup, create_network, docker_client, network_exists, TEST_LABEL};
+use common::{cleanup, create_volume, docker_client, volume_exists, TEST_LABEL};
 use docker_reaper::{
-    reap_networks, Filter, ReapNetworksConfig, RemovalStatus, Resource, ResourceType,
+    reap_volumes, Filter, ReapVolumesConfig, RemovalStatus, Resource, ResourceType,
 };
 use serial_test::serial;
 use tokio::time::{sleep, Duration};
 
-/// Test that only networks older than the `min_age` threshold are reaped.
+/// Test that only volumes older than the `min_age` threshold are reaped.
 #[tokio::test]
 #[serial]
 async fn min_age() {
-    let old_network_id = create_network(None).await;
+    let old_volume_id = create_volume(None).await;
     sleep(Duration::from_secs(2)).await;
-    let new_network_id = create_network(None).await;
-    reap_networks(
+    let new_volume_id = create_volume(None).await;
+    reap_volumes(
         docker_client(),
-        &ReapNetworksConfig {
+        &ReapVolumesConfig {
             dry_run: false,
             min_age: Some(Duration::from_secs(2)),
             max_age: None,
@@ -30,22 +30,22 @@ async fn min_age() {
         },
     )
     .await
-    .expect("failed to reap networks");
-    assert_eq!(network_exists(&old_network_id).await, false);
-    assert_eq!(network_exists(&new_network_id).await, true);
+    .expect("failed to reap volumes");
+    assert_eq!(volume_exists(&old_volume_id).await, false);
+    assert_eq!(volume_exists(&new_volume_id).await, true);
     cleanup().await;
 }
 
-/// Test that only networks younger than the `max_age` threshold are reaped.
+/// Test that only volumes younger than the `max_age` threshold are reaped.
 #[tokio::test]
 #[serial]
 async fn max_age() {
-    let old_network_id = create_network(None).await;
+    let old_volume_id = create_volume(None).await;
     sleep(Duration::from_secs(2)).await;
-    let new_network_id = create_network(None).await;
-    reap_networks(
+    let new_volume_id = create_volume(None).await;
+    reap_volumes(
         docker_client(),
-        &ReapNetworksConfig {
+        &ReapVolumesConfig {
             dry_run: false,
             min_age: None,
             max_age: Some(Duration::from_secs(2)),
@@ -53,29 +53,29 @@ async fn max_age() {
         },
     )
     .await
-    .expect("failed to reap networks");
-    assert_eq!(network_exists(&old_network_id).await, true);
-    assert_eq!(network_exists(&new_network_id).await, false);
+    .expect("failed to reap volumes");
+    assert_eq!(volume_exists(&old_volume_id).await, true);
+    assert_eq!(volume_exists(&new_volume_id).await, false);
     cleanup().await;
 }
 
-/// Test that only networks matching the specified filters are reaped.
+/// Test that only volumes matching the specified filters are reaped.
 #[tokio::test]
 #[serial]
 async fn filters() {
-    let purple_network_id = create_network(Some(HashMap::from([(
+    let purple_volume_id = create_volume(Some(HashMap::from([(
         "color".to_string(),
         "purple".to_string(),
     )])))
     .await;
-    let orange_network_id = create_network(Some(HashMap::from([(
+    let orange_volume_id = create_volume(Some(HashMap::from([(
         "color".to_string(),
         "orange".to_string(),
     )])))
     .await;
-    reap_networks(
+    reap_volumes(
         docker_client(),
-        &ReapNetworksConfig {
+        &ReapVolumesConfig {
             dry_run: false,
             min_age: None,
             max_age: None,
@@ -86,9 +86,9 @@ async fn filters() {
         },
     )
     .await
-    .expect("failed to reap networks");
-    assert_eq!(network_exists(&purple_network_id).await, true);
-    assert_eq!(network_exists(&orange_network_id).await, false);
+    .expect("failed to reap volumes");
+    assert_eq!(volume_exists(&purple_volume_id).await, true);
+    assert_eq!(volume_exists(&orange_volume_id).await, false);
     cleanup().await;
 }
 
@@ -96,10 +96,10 @@ async fn filters() {
 #[tokio::test]
 #[serial]
 async fn dry_run() {
-    let network_id = create_network(None).await;
-    let result = reap_networks(
+    let volume_id = create_volume(None).await;
+    let result = reap_volumes(
         docker_client(),
-        &ReapNetworksConfig {
+        &ReapVolumesConfig {
             dry_run: true,
             min_age: None,
             max_age: None,
@@ -107,13 +107,13 @@ async fn dry_run() {
         },
     )
     .await
-    .expect("failed to reap networks");
+    .expect("failed to reap volumes");
     assert!(result.contains(&Resource {
-        resource_type: ResourceType::Network,
-        id: network_id.clone(),
+        resource_type: ResourceType::Volume,
+        id: volume_id.clone(),
         name: String::new(),
         status: RemovalStatus::Eligible
     }));
-    assert_eq!(network_exists(&network_id).await, true);
+    assert_eq!(volume_exists(&volume_id).await, true);
     cleanup().await;
 }
