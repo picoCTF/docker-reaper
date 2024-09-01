@@ -14,7 +14,7 @@ version = "1.0.0"
 
 [dependencies]
 anyhow = "1.0.86"
-bollard = { version = "0.17.0", features = ["ssl"] }
+bollard = { version = "0.17.1", features = ["ssl"] }
 chrono = { version = "0.4.37", default-features = false, features = [
     "std",
     "clock",
