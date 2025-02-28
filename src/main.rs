@@ -4,10 +4,10 @@ use tracing::{debug, error, info, warn};
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
 use docker_reaper::{
-    reap_containers, reap_networks, reap_volumes, Docker, Filter, ReapContainersConfig,
-    ReapNetworksConfig, ReapVolumesConfig,
+    Docker, Filter, ReapContainersConfig, ReapNetworksConfig, ReapVolumesConfig, reap_containers,
+    reap_networks, reap_volumes,
 };
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -131,7 +131,9 @@ async fn main() -> Result<(), anyhow::Error> {
             debug!("Environment variable DOCKER_CERT_PATH set. Connecting via TLS");
             Docker::connect_with_ssl_defaults()?
         } else if env::var("DOCKER_HOST").is_ok() {
-            debug!("Environment variable DOCKER_HOST set, but not DOCKER_CERT_PATH. Connecting via HTTP");
+            debug!(
+                "Environment variable DOCKER_HOST set, but not DOCKER_CERT_PATH. Connecting via HTTP"
+            );
             Docker::connect_with_http_defaults()?
         } else {
             debug!("Environment variable DOCKER_HOST not set, connecting to local machine");
@@ -185,8 +187,8 @@ async fn main() -> Result<(), anyhow::Error> {
                 info!("Found {} matching resources", removed_resources.len());
                 if !removed_resources.is_empty() {
                     use tabled::{
-                        settings::{object::Columns, Style, Width},
                         Table,
+                        settings::{Style, Width, object::Columns},
                     };
                     let mut table = Table::new(removed_resources);
                     info!(

@@ -1,9 +1,9 @@
+#[doc(no_inline)]
+pub use bollard::Docker;
 use bollard::container::{ListContainersOptions, RemoveContainerOptions};
 use bollard::network::ListNetworksOptions;
 use bollard::service::VolumeListResponse;
 use bollard::volume::ListVolumesOptions;
-#[doc(no_inline)]
-pub use bollard::Docker;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};

@@ -1,16 +1,16 @@
 //! Common utility functions for integration tests.
 #![allow(dead_code)]
 
+use bollard::Docker;
 use bollard::container::{Config, NetworkingConfig};
 use bollard::image::CreateImageOptions;
 use bollard::network::CreateNetworkOptions;
 use bollard::secret::{ContainerCreateResponse, EndpointSettings};
 use bollard::volume::CreateVolumeOptions;
-use bollard::Docker;
 use chrono::Utc;
 use docker_reaper::{
-    reap_containers, reap_networks, reap_volumes, Filter, ReapContainersConfig, ReapNetworksConfig,
-    ReapVolumesConfig,
+    Filter, ReapContainersConfig, ReapNetworksConfig, ReapVolumesConfig, reap_containers,
+    reap_networks, reap_volumes,
 };
 use std::collections::HashMap;
 use std::sync::OnceLock;

@@ -6,12 +6,12 @@ mod common;
 
 use std::collections::HashMap;
 
-use common::{cleanup, create_volume, docker_client, volume_exists, TEST_LABEL};
+use common::{TEST_LABEL, cleanup, create_volume, docker_client, volume_exists};
 use docker_reaper::{
-    reap_volumes, Filter, ReapVolumesConfig, RemovalStatus, Resource, ResourceType,
+    Filter, ReapVolumesConfig, RemovalStatus, Resource, ResourceType, reap_volumes,
 };
 use serial_test::serial;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 /// Test that only volumes older than the `min_age` threshold are reaped.
 #[tokio::test]
