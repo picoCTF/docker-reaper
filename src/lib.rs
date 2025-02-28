@@ -111,7 +111,6 @@ impl Filter {
 pub enum ResourceType {
     Container,
     Network,
-    #[allow(dead_code)]
     Volume,
 }
 
@@ -137,7 +136,6 @@ pub struct Resource {
     #[tabled(rename = "Resource Type")]
     pub resource_type: ResourceType,
     #[tabled(skip)]
-    #[allow(dead_code)]
     pub id: String,
     pub name: String,
     pub status: RemovalStatus,
