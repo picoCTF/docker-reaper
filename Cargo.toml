@@ -4,7 +4,7 @@ authors = [
     "picoCTF Team <opensource@picoctf.org>",
 ]
 description = "Command line tool for removing expired Docker resources"
-edition = "2021"
+edition = "2024"
 license = "MIT OR Apache-2.0"
 name = "docker-reaper"
 repository = "https://github.com/picoCTF/docker-reaper"
