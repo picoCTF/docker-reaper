@@ -1,8 +1,5 @@
 [package]
-authors = [
-    "Dustin Martin <dustin@dmartin.io>",
-    "picoCTF Team <opensource@picoctf.org>",
-]
+authors = ["picoCTF Team <opensource@picoctf.org>"]
 description = "Command line tool for removing expired Docker resources"
 edition = "2024"
 license = "MIT OR Apache-2.0"
