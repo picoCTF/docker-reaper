@@ -23,7 +23,7 @@ tabled = "0.20.0"
 thiserror = "2.0.12"
 tokio = { version = "1.47.1", features = ["full"] }
 tracing = "0.1.41"
-tracing-subscriber = "0.3.19"
+tracing-subscriber = "0.3.20"
 
 [dev-dependencies]
 serial_test = { version = "3.2.0" }
