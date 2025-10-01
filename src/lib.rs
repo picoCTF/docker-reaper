@@ -312,16 +312,15 @@ pub async fn reap_containers(
                 .clone(),
             status: RemovalStatus::Eligible,
         });
-        if config.reap_networks {
-            if let Some(network_settings) = container.network_settings {
-                if let Some(networks) = network_settings.networks {
-                    // Docker has network IDs, but also requires each network to have a unique
-                    // name. We just use the name as an ID since it's easier to retrieve.
-                    eligible_network_names.extend(networks.keys().cloned().inspect(|name| {
-                        debug!("Added network {} from container {} ", name, id);
-                    }))
-                }
-            }
+        if config.reap_networks
+            && let Some(network_settings) = container.network_settings
+            && let Some(networks) = network_settings.networks
+        {
+            // Docker has network IDs, but also requires each network to have a unique
+            // name. We just use the name as an ID since it's easier to retrieve.
+            eligible_network_names.extend(networks.keys().cloned().inspect(|name| {
+                debug!("Added network {} from container {} ", name, id);
+            }))
         }
     }
     for network_name in eligible_network_names {
