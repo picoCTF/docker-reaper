@@ -26,5 +26,5 @@ tracing = "0.1.44"
 tracing-subscriber = "0.3.22"
 
 [dev-dependencies]
-serial_test = { version = "3.2.0" }
+serial_test = { version = "3.4.0" }
 tokio-stream = "0.1.18"
