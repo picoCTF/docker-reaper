@@ -1,6 +1,10 @@
 //! Common utility functions for integration tests.
 #![allow(dead_code)]
 
+use crate::reaper::{
+    Filter, ReapContainersConfig, ReapNetworksConfig, ReapVolumesConfig, reap_containers,
+    reap_networks, reap_volumes,
+};
 use bollard::Docker;
 use bollard::container::{Config, NetworkingConfig};
 use bollard::image::CreateImageOptions;
@@ -8,19 +12,15 @@ use bollard::network::CreateNetworkOptions;
 use bollard::secret::{ContainerCreateResponse, EndpointSettings};
 use bollard::volume::CreateVolumeOptions;
 use chrono::Utc;
-use docker_reaper::{
-    Filter, ReapContainersConfig, ReapNetworksConfig, ReapVolumesConfig, reap_containers,
-    reap_networks, reap_volumes,
-};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use tokio_stream::StreamExt;
 
 /// A label set on all test-created Docker resources.
-pub(crate) const TEST_LABEL: &str = "docker-reaper-test";
+pub(super) const TEST_LABEL: &str = "docker-reaper-test";
 
 /// Obtain a client for the local Docker daemon.
-pub(crate) fn docker_client() -> &'static Docker {
+pub(super) fn docker_client() -> &'static Docker {
     static CLIENT: OnceLock<Docker> = OnceLock::new();
     CLIENT.get_or_init(|| {
         Docker::connect_with_local_defaults().expect("failed to connect to Docker daemon")
@@ -29,14 +29,14 @@ pub(crate) fn docker_client() -> &'static Docker {
 
 /// Return type for [run_container] calls.
 /// A network will not be created unless the `with_network` argument was `true`.
-pub(crate) struct RunContainerResult {
-    pub(crate) container_id: String,
-    pub(crate) network_id: Option<String>,
+pub(super) struct RunContainerResult {
+    pub(super) container_id: String,
+    pub(super) network_id: Option<String>,
 }
 
 /// Run a container on the local Docker daemon.
 /// The label [TEST_LABEL] will always be set. Additional labels may also be specified.
-pub(crate) async fn run_container(
+pub(super) async fn run_container(
     with_network: bool,
     extra_labels: Option<HashMap<String, String>>,
 ) -> RunContainerResult {
@@ -107,7 +107,7 @@ pub(crate) async fn run_container(
 
 /// Create a network on the local Docker daemon. Returns the name of the created network.
 /// The label [TEST_LABEL] will always be set. Additional labels may also be specified.
-pub(crate) async fn create_network(extra_labels: Option<HashMap<String, String>>) -> String {
+pub(super) async fn create_network(extra_labels: Option<HashMap<String, String>>) -> String {
     let client = docker_client();
     let mut labels = HashMap::from([(TEST_LABEL.to_string(), "true".to_string())]);
     if let Some(extra_labels) = extra_labels {
@@ -130,7 +130,7 @@ pub(crate) async fn create_network(extra_labels: Option<HashMap<String, String>>
 
 /// Create a volume on the local Docker daemon. Returns the name of the created volume.
 /// The label [TEST_LABEL] will always be set. Additional labels may also be specified.
-pub(crate) async fn create_volume(extra_labels: Option<HashMap<String, String>>) -> String {
+pub(super) async fn create_volume(extra_labels: Option<HashMap<String, String>>) -> String {
     let client = docker_client();
     let mut labels = HashMap::from([(TEST_LABEL.to_string(), "true".to_string())]);
     if let Some(extra_labels) = extra_labels {
@@ -149,7 +149,7 @@ pub(crate) async fn create_volume(extra_labels: Option<HashMap<String, String>>)
 }
 
 /// Check whether a container with the given ID exists.
-pub(crate) async fn container_exists(id: &str) -> bool {
+pub(super) async fn container_exists(id: &str) -> bool {
     let client = docker_client();
     match client.inspect_container(id, None).await {
         Ok(_) => return true,
@@ -163,7 +163,7 @@ pub(crate) async fn container_exists(id: &str) -> bool {
 }
 
 /// Check whether a network with the given name exists.
-pub(crate) async fn network_exists(name: &str) -> bool {
+pub(super) async fn network_exists(name: &str) -> bool {
     let client = docker_client();
     match client.inspect_network::<&str>(name, None).await {
         Ok(_) => return true,
@@ -177,7 +177,7 @@ pub(crate) async fn network_exists(name: &str) -> bool {
 }
 
 /// Check whether a volume with the given name exists.
-pub(crate) async fn volume_exists(name: &str) -> bool {
+pub(super) async fn volume_exists(name: &str) -> bool {
     let client = docker_client();
     match client.inspect_volume(name).await {
         Ok(_) => return true,
@@ -191,7 +191,7 @@ pub(crate) async fn volume_exists(name: &str) -> bool {
 }
 
 /// Clean up all remaining test resources.
-pub(crate) async fn cleanup() {
+pub(super) async fn cleanup() {
     let client = docker_client();
     reap_containers(
         client,

@@ -1,5 +1,4 @@
-#[doc(no_inline)]
-pub use bollard::Docker;
+use bollard::Docker;
 use bollard::container::{ListContainersOptions, RemoveContainerOptions};
 use bollard::network::ListNetworksOptions;
 use bollard::service::VolumeListResponse;
@@ -13,45 +12,45 @@ use tokio::time::Duration;
 use tracing::{debug, warn};
 
 #[derive(Debug)]
-pub struct ReapContainersConfig<'a> {
+pub(crate) struct ReapContainersConfig<'a> {
     /// Return results without actually removing containers or networks.
-    pub dry_run: bool,
+    pub(crate) dry_run: bool,
     /// Only containers older than this duration will be eligible for reaping.
-    pub min_age: Option<Duration>,
+    pub(crate) min_age: Option<Duration>,
     /// Only containers younger than this duration will be eligible for reaping.
-    pub max_age: Option<Duration>,
+    pub(crate) max_age: Option<Duration>,
     /// Additional Docker Engine-supported [container filters](https://docs.docker.com/engine/reference/commandline/ps/#filter).
-    pub filters: &'a Vec<Filter>,
+    pub(crate) filters: &'a Vec<Filter>,
     /// Also attempt to remove the networks associated with reaped containers.
-    pub reap_networks: bool,
+    pub(crate) reap_networks: bool,
 }
 
 #[derive(Debug)]
-pub struct ReapNetworksConfig<'a> {
+pub(crate) struct ReapNetworksConfig<'a> {
     /// Return results without actually removing networks.
-    pub dry_run: bool,
+    pub(crate) dry_run: bool,
     /// Only networks older than this duration will be eligible for reaping.
-    pub min_age: Option<Duration>,
+    pub(crate) min_age: Option<Duration>,
     /// Only networks younger than this duration will be eligible for reaping.
-    pub max_age: Option<Duration>,
+    pub(crate) max_age: Option<Duration>,
     /// Additional Docker Engine-supported [network filters](https://docs.docker.com/engine/reference/commandline/network_ls/#filter).
-    pub filters: &'a Vec<Filter>,
+    pub(crate) filters: &'a Vec<Filter>,
 }
 
 #[derive(Debug)]
-pub struct ReapVolumesConfig<'a> {
+pub(crate) struct ReapVolumesConfig<'a> {
     /// Return results without actually removing volumes.
-    pub dry_run: bool,
+    pub(crate) dry_run: bool,
     /// Only volumes older than this duration will be eligible for reaping.
-    pub min_age: Option<Duration>,
+    pub(crate) min_age: Option<Duration>,
     /// Only volumes younger than this duration will be eligible for reaping.
-    pub max_age: Option<Duration>,
+    pub(crate) max_age: Option<Duration>,
     /// Additional Docker Engine-supported [volume filters](https://docs.docker.com/engine/reference/commandline/volume_ls/#filter).
-    pub filters: &'a Vec<Filter>,
+    pub(crate) filters: &'a Vec<Filter>,
 }
 
 #[derive(Debug)]
-pub enum RemovalStatus {
+pub(crate) enum RemovalStatus {
     /// Used in dry-run mode to indicate that a resource is eligible for removal.
     Eligible,
     /// Resource was successfully removed.
@@ -75,7 +74,7 @@ impl fmt::Display for RemovalStatus {
 
 #[derive(Clone, Debug)]
 /// A Docker Engine filter (see <https://docs.docker.com/engine/reference/commandline/ps/#filter>)
-pub struct Filter {
+pub(crate) struct Filter {
     name: String,
     value: String,
 }
@@ -99,7 +98,7 @@ impl BollardConversionExt for Vec<Filter> {
 }
 
 impl Filter {
-    pub fn new(name: &str, value: &str) -> Self {
+    pub(crate) fn new(name: &str, value: &str) -> Self {
         Self {
             name: String::from(name),
             value: String::from(value),
@@ -108,7 +107,7 @@ impl Filter {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum ResourceType {
+pub(crate) enum ResourceType {
     Container,
     Network,
     Volume,
@@ -132,13 +131,13 @@ impl fmt::Display for ResourceType {
 
 #[derive(Debug, Tabled)]
 #[tabled(rename_all = "PascalCase")]
-pub struct Resource {
+pub(crate) struct Resource {
     #[tabled(rename = "Resource Type")]
-    pub resource_type: ResourceType,
+    pub(crate) resource_type: ResourceType,
     #[tabled(skip)]
-    pub id: String,
-    pub name: String,
-    pub status: RemovalStatus,
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) status: RemovalStatus,
 }
 
 impl PartialEq for Resource {
@@ -222,14 +221,14 @@ impl Resource {
 
 /// Error encountered while removing a resource.
 #[derive(Error, Debug)]
-pub enum RemovalError {
+pub(crate) enum RemovalError {
     #[error(transparent)]
     Docker(#[from] bollard::errors::Error),
 }
 
 /// Unrecoverable error encountered during a reap iteration.
 #[derive(Error, Debug)]
-pub enum ReapError {
+pub(crate) enum ReapError {
     #[error(transparent)]
     Docker(#[from] bollard::errors::Error),
     #[error(transparent)]
@@ -240,7 +239,7 @@ pub enum ReapError {
     InvalidAgeBound,
 }
 
-pub async fn reap_containers(
+pub(crate) async fn reap_containers(
     docker: &Docker,
     config: &ReapContainersConfig<'_>,
 ) -> Result<Vec<Resource>, ReapError> {
@@ -355,7 +354,7 @@ pub async fn reap_containers(
     Ok(removed_resources)
 }
 
-pub async fn reap_networks(
+pub(crate) async fn reap_networks(
     docker: &Docker,
     config: &ReapNetworksConfig<'_>,
 ) -> Result<Vec<Resource>, ReapError> {
@@ -428,7 +427,7 @@ pub async fn reap_networks(
     Ok(removed_networks)
 }
 
-pub async fn reap_volumes(
+pub(crate) async fn reap_volumes(
     docker: &Docker,
     config: &ReapVolumesConfig<'_>,
 ) -> Result<Vec<Resource>, ReapError> {
