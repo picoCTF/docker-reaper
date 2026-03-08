@@ -148,7 +148,7 @@ impl PartialEq for Resource {
 
 impl Resource {
     /// Attempts to remove this resource.
-    /// After competion, the resource's `status` will be either `RemovalStatus::Success` or
+    /// After completion, the resource's `status` will be either `RemovalStatus::Success` or
     /// `RemovalStatus::Error`.
     async fn remove(&mut self, docker: &Docker) {
         debug!("Removing {} {}", self.resource_type, self.name);

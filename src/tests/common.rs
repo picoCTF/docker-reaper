@@ -40,7 +40,7 @@ pub(super) async fn run_container(
     with_network: bool,
     extra_labels: Option<HashMap<String, String>>,
 ) -> RunContainerResult {
-    static TEST_IMAGE: &'static str = "busybox:latest";
+    static TEST_IMAGE: &str = "busybox:latest";
 
     let client = docker_client();
     let mut labels = HashMap::from([(TEST_LABEL.to_string(), "true".to_string())]);
@@ -98,7 +98,7 @@ pub(super) async fn run_container(
     client
         .start_container::<&str>(&container_id, None)
         .await
-        .expect(&format!("failed to start container {container_id}"));
+        .unwrap_or_else(|e| panic!("failed to start container {container_id}: {e}"));
     RunContainerResult {
         container_id,
         network_id,
@@ -124,7 +124,7 @@ pub(super) async fn create_network(extra_labels: Option<HashMap<String, String>>
         .expect("failed to create network");
     // We use names rather than actual IDs to uniquely identify networks in docker-reaper
     // because they are more meaningful in the user-facing output. Docker's handling of network
-    // names vs. IDs is strange - they can effectively be used interchangably.
+    // names vs. IDs is strange - they can effectively be used interchangeably.
     name
 }
 
