@@ -1,10 +1,16 @@
+mod reaper;
+
+#[cfg(test)]
+mod tests;
+
 use std::env;
 use tracing::{debug, error, info, warn};
 
 use anyhow::Context;
+use bollard::Docker;
 use clap::{Args, Parser, Subcommand};
-use docker_reaper::{
-    Docker, Filter, ReapContainersConfig, ReapNetworksConfig, ReapVolumesConfig, reap_containers,
+use reaper::{
+    Filter, ReapContainersConfig, ReapNetworksConfig, ReapVolumesConfig, reap_containers,
     reap_networks, reap_volumes,
 };
 use tokio::time::{Duration, sleep};
