@@ -17,7 +17,7 @@ chrono = { version = "0.4.44", default-features = false, features = [
     "clock",
 ] }
 clap = { version = "4.5.60", features = ["derive"] }
-futures = "0.3.31"
+futures = "0.3.32"
 go-parse-duration = "0.1.1"
 tabled = "0.20.0"
 thiserror = "2.0.17"
