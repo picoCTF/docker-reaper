@@ -2,11 +2,11 @@
 #![allow(dead_code)]
 
 use bollard::Docker;
-use bollard::container::{Config, NetworkingConfig};
-use bollard::image::CreateImageOptions;
-use bollard::network::CreateNetworkOptions;
-use bollard::secret::{ContainerCreateResponse, EndpointSettings};
-use bollard::volume::CreateVolumeOptions;
+use bollard::models::{
+    ContainerCreateBody, ContainerCreateResponse, EndpointSettings, NetworkCreateRequest,
+    NetworkingConfig, VolumeCreateRequest,
+};
+use bollard::query_parameters::CreateImageOptions;
 use chrono::Utc;
 use docker_reaper::{
     Filter, ReapContainersConfig, ReapNetworksConfig, ReapVolumesConfig, reap_containers,
@@ -67,9 +67,9 @@ pub(crate) async fn run_container(
     let ContainerCreateResponse {
         id: container_id, ..
     } = client
-        .create_container::<String, String>(
+        .create_container(
             None,
-            Config {
+            ContainerCreateBody {
                 tty: Some(true),
                 cmd: None,
                 image: Some(TEST_IMAGE.to_string()),
@@ -78,13 +78,13 @@ pub(crate) async fn run_container(
                     if with_network {
                         network_id = Some(create_network(extra_labels.clone()).await);
                         Some(NetworkingConfig {
-                            endpoints_config: HashMap::from([(
+                            endpoints_config: Some(HashMap::from([(
                                 "docker-reaper-test-network".to_string(),
                                 EndpointSettings {
                                     network_id: network_id.clone(),
                                     ..Default::default()
                                 },
-                            )]),
+                            )])),
                         })
                     } else {
                         None
@@ -115,9 +115,9 @@ pub(crate) async fn create_network(extra_labels: Option<HashMap<String, String>>
     }
     let name = Utc::now().timestamp_millis().to_string(); // network names must be unique
     client
-        .create_network(CreateNetworkOptions {
+        .create_network(NetworkCreateRequest {
             name: name.clone(),
-            labels,
+            labels: Some(labels),
             ..Default::default()
         })
         .await
@@ -138,9 +138,9 @@ pub(crate) async fn create_volume(extra_labels: Option<HashMap<String, String>>)
     }
     let name = Utc::now().timestamp_millis().to_string(); // volume names must be unique
     client
-        .create_volume(CreateVolumeOptions {
-            name: name.clone(),
-            labels,
+        .create_volume(VolumeCreateRequest {
+            name: Some(name.clone()),
+            labels: Some(labels),
             ..Default::default()
         })
         .await

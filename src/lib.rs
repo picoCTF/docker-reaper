@@ -1,9 +1,9 @@
 #[doc(no_inline)]
 pub use bollard::Docker;
-use bollard::container::{ListContainersOptions, RemoveContainerOptions};
-use bollard::network::ListNetworksOptions;
-use bollard::service::VolumeListResponse;
-use bollard::volume::ListVolumesOptions;
+use bollard::models::VolumeListResponse;
+use bollard::query_parameters::{
+    ListContainersOptions, ListNetworksOptions, ListVolumesOptions, RemoveContainerOptions,
+};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -198,7 +198,13 @@ impl Resource {
                 };
             }
             ResourceType::Volume => {
-                match docker.remove_volume(&self.id, None).await {
+                match docker
+                    .remove_volume(
+                        &self.id,
+                        None::<bollard::query_parameters::RemoveVolumeOptions>,
+                    )
+                    .await
+                {
                     Ok(_) => {
                         self.status = RemovalStatus::Success;
                     }
@@ -254,7 +260,7 @@ pub async fn reap_containers(
     let mut eligible_containers = docker
         .list_containers(Some(ListContainersOptions {
             all: true,
-            filters: config.filters.to_bollard_filters(),
+            filters: Some(config.filters.to_bollard_filters()),
             ..Default::default()
         }))
         .await?;
@@ -365,7 +371,7 @@ pub async fn reap_networks(
 
     let mut eligible_networks = docker
         .list_networks(Some(ListNetworksOptions {
-            filters: config.filters.to_bollard_filters(),
+            filters: Some(config.filters.to_bollard_filters()),
         }))
         .await?;
 
@@ -441,7 +447,7 @@ pub async fn reap_volumes(
         warnings,
     } = docker
         .list_volumes(Some(ListVolumesOptions {
-            filters: config.filters.to_bollard_filters(),
+            filters: Some(config.filters.to_bollard_filters()),
         }))
         .await?;
     if let Some(warnings) = warnings {
