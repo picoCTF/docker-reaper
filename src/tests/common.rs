@@ -6,11 +6,11 @@ use crate::reaper::{
     reap_networks, reap_volumes,
 };
 use bollard::Docker;
-use bollard::container::{Config, NetworkingConfig};
-use bollard::image::CreateImageOptions;
-use bollard::network::CreateNetworkOptions;
-use bollard::secret::{ContainerCreateResponse, EndpointSettings};
-use bollard::volume::CreateVolumeOptions;
+use bollard::models::{
+    ContainerCreateBody, ContainerCreateResponse, EndpointSettings, NetworkCreateRequest,
+    NetworkingConfig, VolumeCreateRequest,
+};
+use bollard::query_parameters::CreateImageOptions;
 use chrono::Utc;
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -53,7 +53,7 @@ pub(super) async fn run_container(
     if client.inspect_image(&TEST_IMAGE).await.is_err() {
         let mut pull_results_stream = client.create_image(
             Some(CreateImageOptions {
-                from_image: TEST_IMAGE,
+                from_image: Some(TEST_IMAGE.to_string()),
                 ..Default::default()
             }),
             None,
@@ -67,9 +67,9 @@ pub(super) async fn run_container(
     let ContainerCreateResponse {
         id: container_id, ..
     } = client
-        .create_container::<String, String>(
+        .create_container(
             None,
-            Config {
+            ContainerCreateBody {
                 tty: Some(true),
                 cmd: None,
                 image: Some(TEST_IMAGE.to_string()),
@@ -78,13 +78,13 @@ pub(super) async fn run_container(
                     if with_network {
                         network_id = Some(create_network(extra_labels.clone()).await);
                         Some(NetworkingConfig {
-                            endpoints_config: HashMap::from([(
+                            endpoints_config: Some(HashMap::from([(
                                 "docker-reaper-test-network".to_string(),
                                 EndpointSettings {
                                     network_id: network_id.clone(),
                                     ..Default::default()
                                 },
-                            )]),
+                            )])),
                         })
                     } else {
                         None
@@ -96,7 +96,7 @@ pub(super) async fn run_container(
         .await
         .expect("failed to create container");
     client
-        .start_container::<&str>(&container_id, None)
+        .start_container(&container_id, None)
         .await
         .unwrap_or_else(|e| panic!("failed to start container {container_id}: {e}"));
     RunContainerResult {
@@ -115,9 +115,9 @@ pub(super) async fn create_network(extra_labels: Option<HashMap<String, String>>
     }
     let name = Utc::now().timestamp_millis().to_string(); // network names must be unique
     client
-        .create_network(CreateNetworkOptions {
+        .create_network(NetworkCreateRequest {
             name: name.clone(),
-            labels,
+            labels: Some(labels),
             ..Default::default()
         })
         .await
@@ -138,9 +138,9 @@ pub(super) async fn create_volume(extra_labels: Option<HashMap<String, String>>)
     }
     let name = Utc::now().timestamp_millis().to_string(); // volume names must be unique
     client
-        .create_volume(CreateVolumeOptions {
-            name: name.clone(),
-            labels,
+        .create_volume(VolumeCreateRequest {
+            name: Some(name.clone()),
+            labels: Some(labels),
             ..Default::default()
         })
         .await
@@ -165,7 +165,7 @@ pub(super) async fn container_exists(id: &str) -> bool {
 /// Check whether a network with the given name exists.
 pub(super) async fn network_exists(name: &str) -> bool {
     let client = docker_client();
-    match client.inspect_network::<&str>(name, None).await {
+    match client.inspect_network(name, None).await {
         Ok(_) => return true,
         Err(err) => match err {
             bollard::errors::Error::DockerResponseServerError {
