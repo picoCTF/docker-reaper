@@ -15,7 +15,7 @@ jobs:
     steps:
       - name: Create release
         id: create-release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
   build:
     name: Build release binaries
     runs-on: ${{ matrix.runner-os }}
@@ -50,6 +50,6 @@ jobs:
         env:
           suffix: ${{ matrix.rustc-target }}
       - name: Upload tarball
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: out/*.tar.gz

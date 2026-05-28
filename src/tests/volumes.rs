@@ -2,12 +2,10 @@
 //!
 //! These are run serially because all test-related resources are cleaned up after each test.
 
-mod common;
-
 use std::collections::HashMap;
 
-use common::{TEST_LABEL, cleanup, create_volume, docker_client, volume_exists};
-use docker_reaper::{
+use super::common::{TEST_LABEL, cleanup, create_volume, docker_client, volume_exists};
+use crate::reaper::{
     Filter, ReapVolumesConfig, RemovalStatus, Resource, ResourceType, reap_volumes,
 };
 use serial_test::serial;
