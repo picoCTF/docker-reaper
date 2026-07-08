@@ -110,6 +110,7 @@ async fn dry_run() {
         resource_type: ResourceType::Volume,
         id: volume_id.clone(),
         name: String::new(),
+        details: String::new(),
         status: RemovalStatus::Eligible
     }));
     assert_eq!(volume_exists(&volume_id).await, true);

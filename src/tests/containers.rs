@@ -166,12 +166,14 @@ async fn dry_run() {
         resource_type: ResourceType::Container,
         id: container_id.clone(),
         name: String::new(),
+        details: String::new(),
         status: RemovalStatus::Eligible,
     }));
     assert!(result.contains(&Resource {
         resource_type: ResourceType::Network,
         id: network_id.clone().expect("network ID not present"),
         name: String::new(),
+        details: String::new(),
         status: RemovalStatus::Eligible,
     }));
     assert_eq!(
