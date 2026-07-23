@@ -110,6 +110,7 @@ async fn dry_run() {
         resource_type: ResourceType::Network,
         id: network_id.clone(),
         name: String::new(),
+        details: String::new(),
         status: RemovalStatus::Eligible
     }));
     assert_eq!(network_exists(&network_id).await, true);
