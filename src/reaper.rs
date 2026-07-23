@@ -608,7 +608,7 @@ pub(crate) fn plan_image_evictions(
             unique_size: u64::try_from(image.size - image.shared_size.max(0)).unwrap_or(0),
         })
         .collect();
-    candidates.sort_by(|a, b| b.unique_size.cmp(&a.unique_size));
+    candidates.sort_by_key(|c| std::cmp::Reverse(c.unique_size));
     candidates
 }
 
