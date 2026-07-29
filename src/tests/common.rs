@@ -14,7 +14,20 @@ use bollard::query_parameters::CreateImageOptions;
 use chrono::Utc;
 use std::collections::HashMap;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio_stream::StreamExt;
+
+static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn unique_resource_name() -> String {
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "{}_{}_{}",
+        Utc::now().timestamp_millis(),
+        std::process::id(),
+        count
+    )
+}
 
 /// A label set on all test-created Docker resources.
 pub(super) const TEST_LABEL: &str = "docker-reaper-test";
@@ -113,7 +126,7 @@ pub(super) async fn create_network(extra_labels: Option<HashMap<String, String>>
     if let Some(extra_labels) = extra_labels {
         labels.extend(extra_labels.into_iter())
     }
-    let name = Utc::now().timestamp_millis().to_string(); // network names must be unique
+    let name = unique_resource_name(); // network names must be unique
     client
         .create_network(NetworkCreateRequest {
             name: name.clone(),
@@ -136,7 +149,7 @@ pub(super) async fn create_volume(extra_labels: Option<HashMap<String, String>>)
     if let Some(extra_labels) = extra_labels {
         labels.extend(extra_labels.into_iter())
     }
-    let name = Utc::now().timestamp_millis().to_string(); // volume names must be unique
+    let name = unique_resource_name(); // volume names must be unique
     client
         .create_volume(VolumeCreateRequest {
             name: Some(name.clone()),
