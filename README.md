@@ -1,10 +1,10 @@
 # docker-reaper
 
-Automatically remove Docker resources (containers, networks, or volumes) older than a certain duration.
+Automatically remove Docker resources (containers, networks, or volumes) older than a certain duration, or evict unused images when disk usage exceeds a threshold.
 
-In situations where containers and other resources are spawned on-demand by users (such as CTF challenge servers), it is often desirable to enforce a maximum lifespan for containers.
+In situations where containers and other resources are spawned on-demand by users (such as CTF challenge servers), it is often desirable to enforce a maximum lifespan for containers or prevent disk exhaustion from accumulated container images.
 
-However, the Docker Engine API does not provide a simple way to perform actions like "remove all containers which are more than 30 minutes old." Instead, it is necessary to inspect the creation time of each container (or other resource) and determine whether to remove each one individually. `docker-reaper` automates this process, along with some additional helpful functionality.
+However, the Docker Engine API does not provide a simple way to perform actions like "remove all containers which are more than 30 minutes old" or automatically evict unused images when disk space runs low. Instead, it is necessary to inspect the creation time of each container (or other resource) or monitor disk usage and determine whether to remove each resource individually. `docker-reaper` automates this process, along with some additional helpful functionality.
 
 ## Sample Usage
 
@@ -17,6 +17,9 @@ $ docker-reaper networks --filter label=<value> --max-age 72h
 
 # Check which volumes would be removed (non-destructive)
 $ docker-reaper volumes --min-age 10m --dry-run
+
+# Evict unused images (largest reclaimable first) when disk usage exceeds 80% until reaching 70%
+$ docker-reaper images --threshold 80 --target 70
 ```
 
 Run `docker-reaper --help` for a full list of available options.
@@ -61,6 +64,22 @@ $ docker-reaper containers --min-age 15m --every 1m
 ```
 
 will repeatedly remove containers more than 15 minutes old, waiting 1 minute between each attempt.
+
+### Disk-pressure image eviction
+
+The `images` subcommand monitors filesystem usage and automatically evicts unused Docker images (images not referenced by any container, running or stopped) when disk usage exceeds a configured threshold:
+
+```bash
+$ docker-reaper images --threshold 80 --target 70
+```
+
+Key flags for `docker-reaper images`:
+- `--threshold <percent>`: Only reap when disk usage is at or above this percentage (default: `80`).
+- `--target <percent>`: Remove unused images until disk usage falls below this percentage (default: `70`).
+- `--disk-path <path>`: Filesystem path to measure disk usage on. Defaults to the Docker daemon's root directory (`docker_root_dir`). Note: when targeting a remote daemon via `DOCKER_HOST`, `--disk-path` must be explicitly specified because disk measurement operates on local storage.
+- `-f, --filter <name=value>`: Only reap images matching Docker Engine-supported filters (can be specified multiple times).
+
+Images are selected and evicted largest-unique-size first (reclaimable bytes not shared with other images) until disk usage drops below the target percentage. Non-forced removals skip images that gain containers mid-run.
 
 ## Library and Semantic Versioning
 
