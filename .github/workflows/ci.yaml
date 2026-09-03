@@ -33,13 +33,13 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Also sets RUSTFLAGS=-D warnings, registers rustc/rustfmt problem matchers,
+      # and runs Swatinem/rust-cache.
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # v1.94.1
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
+          toolchain: stable
           components: rustfmt, clippy
-          toolchain: stable             
-      - name: Set up Rust caching
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Run rustfmt
         run: |
           cargo fmt -- --check

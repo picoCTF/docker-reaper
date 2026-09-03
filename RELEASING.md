@@ -9,4 +9,6 @@
     ```
     This will automatically run the "Publish release" GitHub Actions workflow, which will create a GitHub release, build a release tarball, and attach the tarball to the release.
 
+1. Once the workflow completes, confirm that the "Check binary architecture" step of each build job reports the expected architecture (`x86-64`, `ARM aarch64`, or `arm64`).
+
 1. Edit the newly created GitHub release, setting the relevant section of `CHANGELOG.md` as the description.

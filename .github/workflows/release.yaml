@@ -22,32 +22,43 @@ jobs:
     needs: create-release
     strategy:
       matrix:
+        # Every target is built natively on a runner of the same architecture.
+        # The Ubuntu version of the Linux runners sets the minimum glibc version
+        # required by the Linux binaries (see CHANGELOG.md).
         include:
           - runner-os: ubuntu-24.04
             rustc-target: "x86_64-unknown-linux-gnu"
-          - runner-os: ubuntu-24.04
+          - runner-os: ubuntu-24.04-arm
             rustc-target: "aarch64-unknown-linux-gnu"
           - runner-os: macos-latest
             rustc-target: "aarch64-apple-darwin"
+    env:
+      rustc_target: ${{ matrix.rustc-target }}
     steps:
       - name: Checkout repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # v1.94.1
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
-          toolchain: stable     
-          targets: ${{ matrix.rustc-target }}
+          toolchain: stable
+          target: ${{ matrix.rustc-target }}
+          # The action defaults to RUSTFLAGS=-D warnings; a new stable lint must not break a release.
+          rustflags: ""
+          # Tag builds have nothing to restore and would only evict CI caches.
+          cache: false
       - name: Build
+        # Building with an explicit --target guarantees the binary matches the tarball name.
         run: |
-          cargo build --release
+          cargo build --release --target "${rustc_target}"
+      - name: Check binary architecture
+        run: |
+          file "target/${rustc_target}/release/docker-reaper"
       - name: Create tarball
         run: |
           mkdir out
-          cp target/release/docker-reaper out/
+          cp "target/${rustc_target}/release/docker-reaper" out/
           cp README.md LICENSE-MIT LICENSE-APACHE CHANGELOG.md out/
-          cd out && tar czf docker-reaper-${suffix}.tar.gz *
-        env:
-          suffix: ${{ matrix.rustc-target }}
+          cd out && tar czf "docker-reaper-${rustc_target}.tar.gz" -- *
       - name: Upload tarball
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
