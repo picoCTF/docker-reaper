@@ -20,6 +20,9 @@ $ docker-reaper volumes --min-age 10m --dry-run
 
 # Evict unused images (largest reclaimable first) when disk usage exceeds 80% until reaching 70%
 $ docker-reaper images --threshold 80 --target 70
+
+# Sweep containerd shims left behind by containers that no longer exist
+$ docker-reaper shims --min-age 10m
 ```
 
 Run `docker-reaper --help` for a full list of available options.
@@ -80,6 +83,70 @@ Key flags for `docker-reaper images`:
 - `-f, --filter <name=value>`: Only reap images matching Docker Engine-supported filters (can be specified multiple times).
 
 Images are selected and evicted largest-unique-size first (reclaimable bytes not shared with other images) until disk usage drops below the target percentage. Non-forced removals skip images that gain containers mid-run.
+
+### Orphaned containerd shim sweep
+
+Each running container has a `containerd-shim-runc-v2` process. If a container is removed
+but its shim is not reaped — for example when a runtime call is cancelled partway through
+a `runc delete` — the shim keeps running, holding roughly 5 MiB, until the host reboots.
+On a small host these accumulate into memory pressure and eventually host-wide OOM kills.
+
+Such a shim cannot be reached through the Engine API: its container is already gone from
+the daemon, so `remove_container` returns 404. The `shims` subcommand finds them by
+reading the local process table instead:
+
+```shell
+# Report orphaned shims without touching them
+$ docker-reaper shims --dry-run
+
+# Sweep shims orphaned for at least 10 minutes
+$ docker-reaper shims --min-age 10m
+```
+
+Key flags for `docker-reaper shims`:
+
+- `--min-age <duration>`: Only reap shims running at least this long (default: `5m`).
+- `--settle <duration>`: Wait this long, then re-confirm each candidate before signalling
+  it (default: `10s`).
+- `--grace <duration>`: How long a shim gets to exit after `SIGTERM` before it is sent
+  `SIGKILL` (default: `10s`).
+- `--namespace <name>`: containerd namespace to sweep (default: `moby`, which is Docker's).
+- `--proc-root <path>` / `--runtime-root <path>`: Override the filesystem locations, mainly
+  for testing.
+
+A shim is only signalled once it has passed four checks:
+
+1. It is in the same PID namespace as `docker-reaper` itself, so it is a host process
+   rather than something inside a container. Everything else comes from
+   `/proc/<pid>/cmdline`, which is argv the target chose for itself — on a host running
+   untrusted containers, any of them can present itself as an orphaned shim. Namespace
+   membership cannot be forged from inside a container, and a genuine orphan is a host
+   process whatever state containerd left behind, so this never spares a real orphan.
+   Its `-id` must also be 64 hex characters, the shape of a Docker container id, and
+   `/proc/<pid>/exe` must name `containerd-shim-runc-v2`. That link is the kernel's rather
+   than the target's, so it rejects a process wearing a shim's argv; an unreadable link
+   keeps the candidate, since sparing a real orphan is the worse failure.
+2. Its container id is absent from the full container list, so neither a running nor a
+   stopped container claims it.
+3. It has been alive for at least `--min-age`, sparing anything mid-creation.
+4. Checks 2 and 3 still hold after `--settle`, and its `/proc/<pid>/cmdline` still names
+   the same container. The re-read closes the window where a container has just been
+   removed but its shim has not yet exited. The argv and PID-namespace checks run once
+   more immediately before the SIGKILL escalation, so a pid reused during the grace
+   window is not signalled.
+
+Check 2 is only meaningful for the containerd namespace the connected daemon owns, so a
+non-default `--namespace` is warned about: the daemon will never report ids from another
+namespace, which makes the check vacuous. For the same reason the sweep assumes the
+connected daemon is the only client of that namespace — a second daemon, a Docker-in-Docker
+inner daemon, or `ctr -n moby` are all invisible to it and visible in `/proc`.
+
+`--dry-run` applies checks 1 to 3 and reports what it would signal; it returns before the
+settle window, so it does not reflect check 4.
+
+Because discovery reads this machine's process table, this subcommand only works against
+a local daemon and exits with an error if `DOCKER_HOST` or `DOCKER_CERT_PATH` is set. It
+also needs permission to signal the shims, which in practice means running as root.
 
 ## Library and Semantic Versioning
 
