@@ -1,4 +1,5 @@
 mod reaper;
+mod shims;
 
 #[cfg(test)]
 mod tests;
@@ -10,8 +11,8 @@ use anyhow::Context;
 use bollard::Docker;
 use clap::{Args, Parser, Subcommand};
 use reaper::{
-    Filter, ReapContainersConfig, ReapImagesConfig, ReapNetworksConfig, ReapVolumesConfig,
-    reap_containers, reap_images, reap_networks, reap_volumes,
+    Filter, ReapContainersConfig, ReapImagesConfig, ReapNetworksConfig, ReapShimsConfig,
+    ReapVolumesConfig, reap_containers, reap_images, reap_networks, reap_shims, reap_volumes,
 };
 use std::path::PathBuf;
 use tokio::time::{Duration, sleep};
@@ -43,6 +44,8 @@ enum Commands {
     Volumes(VolumesArgs),
     /// Reap unused images when disk usage exceeds a threshold.
     Images(ImagesArgs),
+    /// Reap orphaned containerd shims left behind by containers that no longer exist.
+    Shims(ShimsArgs),
 }
 
 #[derive(Debug, Args)]
@@ -132,6 +135,34 @@ struct ImagesArgs {
     filters: Vec<Filter>,
 }
 
+#[derive(Debug, Args)]
+#[command(
+    after_help = "This subcommand inspects the local process table, so it only works against a daemon running on this machine.
+
+Note: <duration> values accept Go-style duration strings (e.g. 1m30s)"
+)]
+struct ShimsArgs {
+    /// Only reap shims that have been running at least this long.
+    #[arg(long, value_name = "duration", value_parser = parse_duration, default_value = "5m")]
+    min_age: Duration,
+    /// Wait this long before re-confirming a candidate, so a container being torn down
+    /// normally is not mistaken for an orphan.
+    #[arg(long, value_name = "duration", value_parser = parse_duration, default_value = "10s")]
+    settle: Duration,
+    /// How long a shim gets to exit after SIGTERM before it is sent SIGKILL.
+    #[arg(long, value_name = "duration", value_parser = parse_duration, default_value = "10s")]
+    grace: Duration,
+    /// containerd namespace to sweep. Docker uses "moby"; other namespaces are ignored.
+    #[arg(long, value_name = "name", default_value = shims::DEFAULT_NAMESPACE)]
+    namespace: String,
+    /// Root of the proc filesystem.
+    #[arg(long, value_name = "path", default_value = "/proc")]
+    proc_root: PathBuf,
+    /// Root of containerd's v2 runtime task state. Used only to enrich output.
+    #[arg(long, value_name = "path", default_value = shims::DEFAULT_RUNTIME_ROOT)]
+    runtime_root: PathBuf,
+}
+
 fn parse_percent(value: &str) -> Result<u8, anyhow::Error> {
     let percent: u8 = value
         .parse()
@@ -178,6 +209,20 @@ async fn main() -> Result<(), anyhow::Error> {
         anyhow::bail!(
             "DOCKER_HOST is set: pass --disk-path explicitly when targeting a remote daemon \
              (the images subcommand measures a local filesystem)"
+        );
+    }
+
+    // Orphaned shims are found by reading this machine's process table, which says
+    // nothing about a daemon running elsewhere.
+    // DOCKER_CERT_PATH matters as much as DOCKER_HOST: the branch below prefers it and
+    // calls connect_with_ssl_defaults, which falls back to tcp://localhost:2375 when
+    // DOCKER_HOST is unset -- so the container list could come from a different daemon
+    // than the process table, and every live container's shim would look orphaned.
+    if let Commands::Shims(_) = global_args.command
+        && (env::var("DOCKER_HOST").is_ok() || env::var("DOCKER_CERT_PATH").is_ok())
+    {
+        anyhow::bail!(
+            "DOCKER_HOST or DOCKER_CERT_PATH is set: the shims subcommand inspects this machine's process table, so it must talk to the daemon running on this machine"
         );
     }
 
@@ -245,6 +290,18 @@ async fn main() -> Result<(), anyhow::Error> {
                     filters: &args.filters,
                 };
                 reap_images(&docker, &config).await
+            }
+            Commands::Shims(ref args) => {
+                let config = ReapShimsConfig {
+                    dry_run: global_args.dry_run,
+                    min_age: args.min_age,
+                    namespace: args.namespace.clone(),
+                    settle: args.settle,
+                    grace: args.grace,
+                    proc_root: args.proc_root.clone(),
+                    runtime_root: args.runtime_root.clone(),
+                };
+                reap_shims(&docker, &config).await
             }
         };
         match result {

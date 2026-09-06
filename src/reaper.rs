@@ -1,3 +1,4 @@
+use crate::shims::{self, DEFAULT_NAMESPACE, ShimProcess};
 use bollard::Docker;
 use bollard::models::{ImageSummary, VolumeListResponse};
 use bollard::query_parameters::{
@@ -10,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tabled::Tabled;
 use thiserror::Error;
-use tokio::time::Duration;
+use tokio::time::{Duration, sleep};
 use tracing::{debug, info, warn};
 
 #[derive(Debug)]
@@ -25,6 +26,32 @@ pub(crate) struct ReapContainersConfig<'a> {
     pub(crate) filters: &'a Vec<Filter>,
     /// Also attempt to remove the networks associated with reaped containers.
     pub(crate) reap_networks: bool,
+}
+
+#[derive(Debug)]
+pub(crate) struct ReapShimsConfig {
+    /// Report orphans without signalling them.
+    pub(crate) dry_run: bool,
+    /// Only shims that have been running at least this long are eligible.
+    pub(crate) min_age: Duration,
+    /// containerd namespace to restrict the sweep to. Docker uses "moby".
+    ///
+    /// Orphanhood is decided against the connected daemon's container list, which is only
+    /// meaningful for the namespace that daemon owns. Selecting another namespace makes
+    /// that check vacuous -- the daemon will never report those ids -- so a non-default
+    /// value is warned about. It also excludes other *namespaces*, not other clients of
+    /// the same one: a second daemon, a DinD inner daemon or `ctr -n moby` are all
+    /// invisible to the queried daemon and visible in /proc. Out of scope by assumption.
+    pub(crate) namespace: String,
+    /// How long to wait before re-confirming a candidate. Closes the window where a
+    /// container has just been removed from the daemon but its shim has not yet exited.
+    pub(crate) settle: Duration,
+    /// How long a shim gets to exit after SIGTERM before it is sent SIGKILL.
+    pub(crate) grace: Duration,
+    /// Root of the proc filesystem. Overridable for testing.
+    pub(crate) proc_root: PathBuf,
+    /// Root of containerd's v2 runtime task state, used only to enrich reporting.
+    pub(crate) runtime_root: PathBuf,
 }
 
 #[derive(Debug)]
@@ -133,6 +160,9 @@ impl Filter {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ResourceType {
     Container,
+    /// An orphaned containerd shim. Not a Docker resource: it is found by reading the
+    /// local process table and removed with a signal, not through the Engine API.
+    Shim,
     Network,
     Volume,
     Image,
@@ -143,6 +173,9 @@ impl fmt::Display for ResourceType {
         match self {
             Self::Container => {
                 write!(f, "Container")
+            }
+            Self::Shim => {
+                write!(f, "Shim")
             }
             Self::Network => {
                 write!(f, "Network")
@@ -251,6 +284,13 @@ impl Resource {
                     Err(e) => self.status = RemovalStatus::Error(RemovalError::Docker(e)),
                 }
             }
+            ResourceType::Shim => {
+                // Unreachable: shims are signalled by reap_shims, which never routes
+                // them through the Engine API. Reported rather than silently skipped.
+                self.status = RemovalStatus::Error(RemovalError::Shim(String::from(
+                    "shims cannot be removed through the Docker API",
+                )));
+            }
             ResourceType::Image => {
                 // No force: an image that gained a container reference since
                 // listing produces a 409 and is skipped rather than orphaning
@@ -287,6 +327,8 @@ impl Resource {
 pub(crate) enum RemovalError {
     #[error(transparent)]
     Docker(#[from] bollard::errors::Error),
+    #[error("{0}")]
+    Shim(String),
 }
 
 /// Unrecoverable error encountered during a reap iteration.
@@ -304,6 +346,11 @@ pub(crate) enum ReapError {
     InvalidDiskBounds,
     #[error("failed to measure disk usage: {0}")]
     DiskMeasurement(#[from] std::io::Error),
+    #[error("failed to read the process table at {path}: {source}")]
+    ProcRead {
+        path: String,
+        source: std::io::Error,
+    },
     #[error("docker daemon did not report its root directory; pass --disk-path explicitly")]
     UnknownDockerRoot,
 }
@@ -766,4 +813,333 @@ pub(crate) async fn reap_images(
         );
     }
     Ok(results)
+}
+
+/// Reaps `containerd-shim-runc-v2` processes whose container no longer exists.
+///
+/// These cannot be reached through the Engine API — the container is already gone from
+/// the daemon, so `remove_container` returns 404 — and each one holds roughly 5 MiB
+/// until the host reboots. Discovery therefore reads the local process table, and this
+/// only makes sense against a local daemon.
+///
+/// A shim is only signalled once it has passed three checks:
+///
+/// 1. Its container id is absent from `list_containers(all)`, so neither a running nor a
+///    stopped container claims it.
+/// 2. It has been alive for at least `min_age`, sparing anything mid-creation.
+/// 3. Both of the above still hold after `settle`, and its argv still names the same
+///    container. The re-read closes the window where a container has just been removed
+///    but its shim has not yet exited, and guards against the pid being reused.
+pub(crate) async fn reap_shims(
+    docker: &Docker,
+    config: &ReapShimsConfig,
+) -> Result<Vec<Resource>, ReapError> {
+    let proc_err = |source| ReapError::ProcRead {
+        path: config.proc_root.display().to_string(),
+        source,
+    };
+    // Every selection gate resolves under proc_root, but the signal goes to the real
+    // process table, so a directory of fixture data could otherwise nominate arbitrary
+    // pids for SIGTERM/SIGKILL. Confirm the tree really is this process's own procfs
+    // before signalling. Dry runs never signal, so they keep working against fixtures.
+    if !config.dry_run {
+        let names_us = std::fs::read_link(config.proc_root.join("self"))
+            .ok()
+            .and_then(|link| link.to_str().and_then(|pid| pid.parse::<u32>().ok()))
+            == Some(std::process::id());
+        if !names_us {
+            return Err(proc_err(std::io::Error::other(
+                "not this process's own procfs; refusing to signal pids read from it",
+            )));
+        }
+    }
+
+    let uptime = shims::uptime(&config.proc_root).map_err(proc_err)?;
+    let clock_ticks = rustix::param::clock_ticks_per_second();
+    let all_shims = shims::list_shims(&config.proc_root, uptime, clock_ticks).map_err(proc_err)?;
+    debug!("Found {} shim process(es)", all_shims.len());
+
+    if config.namespace != DEFAULT_NAMESPACE {
+        warn!(
+            "Sweeping containerd namespace {:?} rather than {:?}: the check that a shim's \
+             container is absent from the daemon is only meaningful for the namespace \
+             that daemon owns, so it does not protect live containers here",
+            config.namespace, DEFAULT_NAMESPACE
+        );
+    }
+
+    let live_containers = list_container_ids(docker).await?;
+    let candidates: Vec<ShimProcess> = all_shims
+        .into_iter()
+        .filter(|shim| {
+            if shim.namespace != config.namespace {
+                debug!(
+                    "Skipped shim {}: namespace {} is out of scope",
+                    shim.pid, shim.namespace
+                );
+                return false;
+            }
+            if live_containers.contains(&shim.container_id) {
+                return false;
+            }
+            if shim.age < config.min_age {
+                debug!(
+                    "Skipped shim {}: only {:?} old, below the minimum age",
+                    shim.pid, shim.age
+                );
+                return false;
+            }
+            // Everything above comes from /proc/<pid>/cmdline, which is argv the process
+            // chose for itself. On a host running untrusted containers any of them can
+            // present itself as an orphaned shim and, by ignoring SIGTERM, make this sweep
+            // spend its grace period on a decoy. Namespace membership cannot be forged
+            // from inside a container, and a genuine orphan is a host process however
+            // containerd left its bookkeeping -- so this cannot spare a real orphan.
+            if !shims::shares_pid_namespace(&config.proc_root, shim.pid) {
+                debug!(
+                    "Skipped shim {}: not in this process's PID namespace, so not a host shim",
+                    shim.pid
+                );
+                return false;
+            }
+            true
+        })
+        .collect();
+
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let describe = |shim: &ShimProcess| {
+        let task_dir =
+            shims::task_state_dir(&config.runtime_root, &shim.namespace, &shim.container_id);
+        format!(
+            "pid {}, age {}s, task state {}",
+            shim.pid,
+            shim.age.as_secs(),
+            if task_dir.exists() {
+                "present"
+            } else {
+                "absent"
+            }
+        )
+    };
+
+    if config.dry_run {
+        return Ok(candidates
+            .iter()
+            .map(|shim| Resource {
+                resource_type: ResourceType::Shim,
+                id: shim.container_id.clone(),
+                name: format!("shim for {}", short_id(&shim.container_id)),
+                details: describe(shim),
+                status: RemovalStatus::Eligible,
+            })
+            .collect());
+    }
+
+    info!(
+        "Found {} candidate orphaned shim(s); re-confirming after {:?}",
+        candidates.len(),
+        config.settle
+    );
+    sleep(config.settle).await;
+    let live_containers = list_container_ids(docker).await?;
+
+    // Re-confirm, then terminate as one batch. Doing it per shim would cost
+    // candidates x grace, because a shim wedged in a cancelled runtime call does not act
+    // on SIGTERM: clearing a large backlog would hold this oneshot unit for minutes and
+    // starve the container and image sweeps that share it.
+    let mut confirmed = Vec::new();
+    let mut spared = 0usize;
+    for shim in candidates {
+        // Anything that changed during the settle window means this was a container
+        // being torn down normally, or a reused pid. Either way, leave it alone.
+        if live_containers.contains(&shim.container_id) {
+            debug!(
+                "Skipped shim {}: its container reappeared during the settle window",
+                shim.pid
+            );
+            spared += 1;
+            continue;
+        }
+        if !shims::still_same_shim(&config.proc_root, &shim) {
+            debug!(
+                "Skipped shim {}: no longer the same process for {}",
+                shim.pid, shim.container_id
+            );
+            spared += 1;
+            continue;
+        }
+        confirmed.push(shim);
+    }
+    if spared > 0 {
+        info!(
+            "Spared {} candidate(s) that changed during the settle window",
+            spared
+        );
+    }
+    let statuses = terminate_shims(&confirmed, &config.proc_root, config.grace).await;
+    Ok(confirmed
+        .into_iter()
+        .zip(statuses)
+        .map(|(shim, status)| Resource {
+            resource_type: ResourceType::Shim,
+            id: shim.container_id.clone(),
+            name: format!("shim for {}", short_id(&shim.container_id)),
+            details: describe(&shim),
+            status,
+        })
+        .collect())
+}
+
+/// Signals a batch of shims: SIGTERM to all, one shared grace window, then SIGKILL to
+/// whatever is still running.
+///
+/// Batched rather than per shim because a shim wedged in a cancelled runtime call does not
+/// act on SIGTERM, so the grace period is the expected cost of every candidate rather than
+/// a rare tail. Sequentially that would be `candidates x grace` -- minutes for a large
+/// backlog, during which this oneshot unit blocks the container and image sweeps it shares.
+///
+/// Returns one status per input shim, in order.
+async fn terminate_shims(
+    shims: &[ShimProcess],
+    proc_root: &Path,
+    grace: Duration,
+) -> Vec<RemovalStatus> {
+    let poll = Duration::from_millis(100);
+    // How long to wait for a SIGKILLed process to actually leave the process table. The
+    // signal is only queued when kill() returns; the target still has to be scheduled and
+    // reaped. Without this every successful kill would be reported as still in progress.
+    let reap_window = Duration::from_millis(500);
+
+    let mut statuses: Vec<Option<RemovalStatus>> = (0..shims.len()).map(|_| None).collect();
+
+    for (i, shim) in shims.iter().enumerate() {
+        match signal_shim(shim, rustix::process::Signal::TERM) {
+            Ok(()) => {}
+            // Already gone between the re-check and here.
+            Err(SignalError::Gone) => statuses[i] = Some(RemovalStatus::Success),
+            Err(SignalError::Failed(e)) => {
+                statuses[i] = Some(RemovalStatus::Error(RemovalError::Shim(format!(
+                    "SIGTERM failed: {e}"
+                ))))
+            }
+        }
+    }
+
+    let outstanding = |statuses: &[Option<RemovalStatus>]| {
+        shims
+            .iter()
+            .enumerate()
+            .any(|(i, s)| statuses[i].is_none() && shims::is_alive(proc_root, s.pid))
+    };
+
+    // Cap the final step: sleeping a whole poll interval each time would round any
+    // grace shorter than the interval up to it, so --grace 1ms would wait 100ms.
+    let mut waited = Duration::ZERO;
+    while waited < grace && outstanding(&statuses) {
+        let step = poll.min(grace.saturating_sub(waited));
+        sleep(step).await;
+        waited += step;
+    }
+
+    for (i, shim) in shims.iter().enumerate() {
+        if statuses[i].is_some() {
+            continue;
+        }
+        if !shims::is_alive(proc_root, shim.pid) {
+            statuses[i] = Some(RemovalStatus::Success);
+            continue;
+        }
+        // The grace window is long enough for a shim that honoured SIGTERM to exit and
+        // have its pid recycled, and is_alive only tests the number. Re-confirm identity
+        // the way reap_shims does before the SIGTERM -- argv plus PID namespace, so a
+        // container cannot steer the escalation with argv it chose for itself.
+        if !shims::still_same_shim(proc_root, shim)
+            || !shims::shares_pid_namespace(proc_root, shim.pid)
+        {
+            warn!(
+                "Shim {} pid was reused during the grace window; not escalating",
+                shim.pid
+            );
+            statuses[i] = Some(RemovalStatus::InUse);
+            continue;
+        }
+        warn!(
+            "Shim {} did not exit within {:?} of SIGTERM; sending SIGKILL",
+            shim.pid, grace
+        );
+        if let Err(SignalError::Failed(e)) = signal_shim(shim, rustix::process::Signal::KILL) {
+            statuses[i] = Some(RemovalStatus::Error(RemovalError::Shim(format!(
+                "SIGKILL failed: {e}"
+            ))));
+        }
+    }
+
+    let mut waited = Duration::ZERO;
+    while waited < reap_window && outstanding(&statuses) {
+        let step = poll.min(reap_window.saturating_sub(waited));
+        sleep(step).await;
+        waited += step;
+    }
+
+    shims
+        .iter()
+        .enumerate()
+        .map(|(i, shim)| {
+            statuses[i].take().unwrap_or_else(|| {
+                if shims::is_alive(proc_root, shim.pid) {
+                    // Uninterruptible sleep, most likely. Distinct from the Docker-409
+                    // sense InProgress carries elsewhere in this crate, so report it as an
+                    // error rather than implying someone else is cleaning it up.
+                    RemovalStatus::Error(RemovalError::Shim(String::from(
+                        "still running after SIGKILL",
+                    )))
+                } else {
+                    RemovalStatus::Success
+                }
+            })
+        })
+        .collect()
+}
+
+enum SignalError {
+    /// The process no longer exists, which for our purposes is a success.
+    Gone,
+    Failed(rustix::io::Errno),
+}
+
+fn signal_shim(shim: &ShimProcess, sig: rustix::process::Signal) -> Result<(), SignalError> {
+    // list_shims already rejects non-positive pids; re-check here so the invariant is
+    // local rather than resting on rustix's Pid::from_raw, whose non-negative guard is a
+    // debug_assert and is compiled out of the release profile. kill() with a negative pid
+    // signals a process group, and -1 means every process the caller may signal.
+    if shim.pid <= 0 {
+        return Err(SignalError::Failed(rustix::io::Errno::INVAL));
+    }
+    let Some(pid) = rustix::process::Pid::from_raw(shim.pid) else {
+        return Err(SignalError::Failed(rustix::io::Errno::INVAL));
+    };
+    match rustix::process::kill_process(pid, sig) {
+        Ok(()) => Ok(()),
+        Err(e) if e == rustix::io::Errno::SRCH => Err(SignalError::Gone),
+        Err(e) => Err(SignalError::Failed(e)),
+    }
+}
+
+/// Every container id known to the daemon, running or not.
+async fn list_container_ids(docker: &Docker) -> Result<HashSet<String>, ReapError> {
+    let containers = docker
+        .list_containers(Some(ListContainersOptions {
+            all: true,
+            ..Default::default()
+        }))
+        .await?;
+    Ok(containers.into_iter().filter_map(|c| c.id).collect())
+}
+
+/// Docker's conventional 12-character short form, for readable output.
+fn short_id(id: &str) -> &str {
+    id.get(..12).unwrap_or(id)
 }
