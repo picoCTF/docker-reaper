@@ -214,6 +214,7 @@ pub(super) async fn cleanup() {
             max_age: None,
             filters: &vec![Filter::new("label", TEST_LABEL)],
             reap_networks: true,
+            record_image_use: None,
         },
     )
     .await

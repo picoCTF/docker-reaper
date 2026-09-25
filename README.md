@@ -21,6 +21,10 @@ $ docker-reaper volumes --min-age 10m --dry-run
 # Evict unused images (largest reclaimable first) when disk usage exceeds 80% until reaching 70%
 $ docker-reaper images --threshold 80 --target 70
 
+# The same, least recently used first, by the record the container sweep keeps
+$ docker-reaper containers --min-age 30m --record-image-use /var/lib/docker-reaper/image-use
+$ docker-reaper images --threshold 80 --target 70 --lru /var/lib/docker-reaper/image-use
+
 # Sweep containerd shims left behind by containers that no longer exist
 $ docker-reaper shims --min-age 10m
 ```
@@ -81,8 +85,35 @@ Key flags for `docker-reaper images`:
 - `--target <percent>`: Remove unused images until disk usage falls below this percentage (default: `70`).
 - `--disk-path <path>`: Filesystem path to measure disk usage on. Defaults to the Docker daemon's root directory (`docker_root_dir`). Note: when targeting a remote daemon via `DOCKER_HOST`, `--disk-path` must be explicitly specified because disk measurement operates on local storage.
 - `-f, --filter <name=value>`: Only reap images matching Docker Engine-supported filters (can be specified multiple times).
+- `--lru <path>`: Evict least recently used first, by the record at this path (see below).
 
 Images are selected and evicted largest-unique-size first (reclaimable bytes not shared with other images) until disk usage drops below the target percentage. Non-forced removals skip images that gain containers mid-run.
+
+#### Least recently used first
+
+Docker records nothing about when an image was last used: the Engine API has no such field,
+and a pull does not set `LastTagTime`. So `--lru` reads a record kept by the container
+sweep instead:
+
+```bash
+$ docker-reaper containers --min-age 30m --record-image-use /var/lib/docker-reaper/image-use
+$ docker-reaper images --threshold 80 --target 70 --lru /var/lib/docker-reaper/image-use
+```
+
+- `containers --record-image-use <path>` stamps the image of every container the sweep
+  matches, old enough to reap or not, as in use now. It uses the container list the sweep
+  fetches anyway, so it adds no call to the daemon; the one exception is the run that
+  creates the record, which lists images once and stamps every image already on the host
+  at 0, older than anything seen since. Nothing is written in a dry run.
+- `images --lru <path>` evicts in order of those stamps, oldest first, and breaks ties
+  largest first. An image the record has never seen arrived after the record started — most
+  likely pulled for a launch whose container does not exist yet — so it counts as used
+  just now. It also skips the shared-size computation, which only the largest-first order
+  needs; a dry run therefore counts each image at its full size.
+
+Sampling is as frequent as the container sweep runs, so a container that comes and goes
+between two runs is not seen. The record is a text file, `<unix seconds> <image id>` per
+line; deleting it starts it over.
 
 ### Orphaned containerd shim sweep
 

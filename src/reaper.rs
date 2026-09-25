@@ -1,4 +1,5 @@
 use crate::shims::{self, DEFAULT_NAMESPACE, ShimProcess};
+use crate::usage::{self, LastUsed};
 use bollard::Docker;
 use bollard::models::{ImageSummary, VolumeListResponse};
 use bollard::query_parameters::{
@@ -26,6 +27,9 @@ pub(crate) struct ReapContainersConfig<'a> {
     pub(crate) filters: &'a Vec<Filter>,
     /// Also attempt to remove the networks associated with reaped containers.
     pub(crate) reap_networks: bool,
+    /// Stamp the image of every listed container, eligible or not, as in use now in the
+    /// record at this path, which `ReapImagesConfig::lru` orders eviction by.
+    pub(crate) record_image_use: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -88,13 +92,16 @@ pub(crate) struct ReapImagesConfig<'a> {
     pub(crate) dry_run: bool,
     /// Reap only when the measured filesystem is at least this full (percent).
     pub(crate) threshold: u8,
-    /// Remove images (largest unique size first) until usage falls below this (percent).
+    /// Remove images until usage falls below this (percent).
     pub(crate) target: u8,
     /// Filesystem to measure; defaults to the daemon's root directory, which
     /// is only correct when the daemon is local.
     pub(crate) disk_path: Option<PathBuf>,
     /// Additional Docker Engine-supported [image filters](https://docs.docker.com/engine/reference/commandline/image_ls/#filter).
     pub(crate) filters: &'a Vec<Filter>,
+    /// Evict least recently used first, by the record at this path, rather than largest
+    /// unique size first.
+    pub(crate) lru: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -378,6 +385,22 @@ pub(crate) async fn reap_containers(
         }))
         .await?;
 
+    // Taken from the list this sweep needs anyway, so the record costs no daemon call.
+    if let Some(ref path) = config.record_image_use
+        && !config.dry_run
+    {
+        let images = eligible_containers
+            .iter()
+            .filter_map(|container| container.image_id.clone());
+        if let Err(e) = record_image_use(docker, path, images).await {
+            warn!(
+                "Failed to update the image use record at {}: {}",
+                path.display(),
+                e
+            );
+        }
+    }
+
     // Reduce the eligible containers to only those within the specified age range (if applicable).
     if config.max_age.is_some() || config.min_age.is_some() {
         let now: Duration = SystemTime::now().duration_since(UNIX_EPOCH)?;
@@ -474,6 +497,35 @@ pub(crate) async fn reap_containers(
     let mut removed_resources = futures::future::join_all(container_futures).await;
     removed_resources.extend(futures::future::join_all(network_futures).await);
     Ok(removed_resources)
+}
+
+/// Stamps images as in use now.
+///
+/// A record that does not exist yet starts here, and every image already on the host
+/// predates it. Those are stamped at 0, behind anything seen in use since and behind a
+/// later pull not yet used, which an eviction counts as used just now. That costs one
+/// image list per record, not per run.
+async fn record_image_use(
+    docker: &Docker,
+    path: &Path,
+    in_use: impl Iterator<Item = String>,
+) -> std::io::Result<()> {
+    let mut record = if path.exists() {
+        usage::load(path)?
+    } else {
+        docker
+            .list_images(None::<ListImagesOptions>)
+            .await
+            .map_err(std::io::Error::other)?
+            .into_iter()
+            .map(|image| (image.id, 0))
+            .collect()
+    };
+    let now = usage::now_secs();
+    for id in in_use {
+        usage::touch(&mut record, &id, now);
+    }
+    usage::save(path, &record)
 }
 
 pub(crate) async fn reap_networks(
@@ -663,6 +715,35 @@ pub(crate) fn plan_image_evictions(
     candidates
 }
 
+/// Reorders candidates least recently used first. The sort is stable, so images last used
+/// at the same time keep `plan_image_evictions`' largest-first order, and an image missing
+/// from the record counts as used just now.
+pub(crate) fn order_least_recently_used(candidates: &mut [ImageCandidate], last_used: &LastUsed) {
+    candidates.sort_by_key(|c| last_used.get(&c.id).copied().unwrap_or(u64::MAX));
+}
+
+/// An image's size, and when it was last used if the record says.
+fn describe_image(candidate: &ImageCandidate, last_used: Option<&LastUsed>, now: u64) -> String {
+    let size = format_size(candidate.unique_size);
+    match last_used.and_then(|record| record.get(&candidate.id)) {
+        Some(stamp) => format!(
+            "{size}, last used {} ago",
+            format_age(now.saturating_sub(*stamp))
+        ),
+        None => size,
+    }
+}
+
+/// A coarse, human-readable age, e.g. "45s", "12m", "3h20m", "2d4h".
+fn format_age(secs: u64) -> String {
+    match secs {
+        0..60 => format!("{secs}s"),
+        60..3600 => format!("{}m", secs / 60),
+        3600..86400 => format!("{}h{}m", secs / 3600, secs % 3600 / 60),
+        _ => format!("{}d{}h", secs / 86400, secs % 86400 / 3600),
+    }
+}
+
 /// Used and total capacity (in bytes) of the filesystem containing `path`,
 /// computed like df(1): capacity is used space plus space available to
 /// unprivileged processes, so the root reserve never counts as free.
@@ -747,21 +828,47 @@ pub(crate) async fn reap_images(
         .collect();
 
     // shared_size asks the engine to compute per-image shared layer bytes,
-    // which list_images otherwise reports as -1.
+    // which list_images otherwise reports as -1. Only the largest-first order
+    // needs it, and it has the daemon compare the layers of every image.
     let images = docker
         .list_images(Some(ListImagesOptions {
-            shared_size: true,
+            shared_size: config.lru.is_none(),
             filters: Some(config.filters.to_bollard_filters()),
             ..Default::default()
         }))
         .await?;
 
-    let candidates = plan_image_evictions(&images, &in_use);
+    let mut candidates = plan_image_evictions(&images, &in_use);
+    let now = usage::now_secs();
+    let mut last_used = config.lru.as_ref().map(|path| {
+        let mut record = usage::load(path).unwrap_or_else(|e| {
+            warn!(
+                "Failed to read the image use record at {}: {}; every image counts as just used",
+                path.display(),
+                e
+            );
+            LastUsed::new()
+        });
+        // In use now, or never seen. The record starts with every image then on
+        // the host, so one it has never seen arrived since: most likely a pull for
+        // a launch that has no container yet, which must not look oldest here.
+        for id in &in_use {
+            usage::touch(&mut record, id, now);
+        }
+        for image in &images {
+            record.entry(image.id.clone()).or_insert(now);
+        }
+        record
+    });
+    if let Some(ref record) = last_used {
+        order_least_recently_used(&mut candidates, record);
+    }
     let target_bytes = (config.target as u64) * (capacity / 100);
 
     if config.dry_run {
         // Estimate using unique sizes; actual reclaim is re-measured from the
-        // filesystem in a real run.
+        // filesystem in a real run. Without shared sizes (--lru) every image
+        // counts at its full size, which overstates what removing it reclaims.
         let mut projected_used = used;
         return Ok(candidates
             .into_iter()
@@ -774,18 +881,18 @@ pub(crate) async fn reap_images(
                 };
                 Resource {
                     resource_type: ResourceType::Image,
+                    details: describe_image(&candidate, last_used.as_ref(), now),
                     id: candidate.id,
                     name: candidate.name,
-                    details: format_size(candidate.unique_size),
                     status,
                 }
             })
             .collect());
     }
 
-    // Remove sequentially, largest first, re-measuring the filesystem after
+    // Remove sequentially, in eviction order, re-measuring the filesystem after
     // each successful removal so we stop as soon as the target is reached
-    // rather than trusting the shared-size estimates.
+    // rather than trusting the size estimates.
     let mut results = Vec::new();
     for candidate in candidates {
         let (used, capacity) = disk_usage(&disk_path)?;
@@ -799,13 +906,34 @@ pub(crate) async fn reap_images(
         }
         let mut resource = Resource {
             resource_type: ResourceType::Image,
+            details: describe_image(&candidate, last_used.as_ref(), now),
             id: candidate.id,
             name: candidate.name,
-            details: format_size(candidate.unique_size),
             status: RemovalStatus::Eligible,
         };
         resource.remove(docker).await;
+        if matches!(resource.status, RemovalStatus::Success)
+            && let Some(ref mut record) = last_used
+        {
+            record.remove(&resource.id);
+        }
         results.push(resource);
+    }
+
+    if let (Some(path), Some(mut record)) = (&config.lru, last_used) {
+        // Only an unfiltered listing shows every image, so only then can entries
+        // for images that no longer exist be told apart and dropped.
+        if config.filters.is_empty() {
+            let present: HashSet<&str> = images.iter().map(|image| image.id.as_str()).collect();
+            record.retain(|id, _| present.contains(id.as_str()));
+        }
+        if let Err(e) = usage::save(path, &record) {
+            warn!(
+                "Failed to save the image use record at {}: {}",
+                path.display(),
+                e
+            );
+        }
     }
 
     let (used, capacity) = disk_usage(&disk_path)?;

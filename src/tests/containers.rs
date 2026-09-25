@@ -35,6 +35,7 @@ async fn min_age() {
             max_age: None,
             filters: &vec![Filter::new("label", TEST_LABEL)],
             reap_networks: false,
+            record_image_use: None,
         },
     )
     .await
@@ -65,6 +66,7 @@ async fn max_age() {
             max_age: Some(Duration::from_secs(2)),
             filters: &vec![Filter::new("label", TEST_LABEL)],
             reap_networks: false,
+            record_image_use: None,
         },
     )
     .await
@@ -105,6 +107,7 @@ async fn filters() {
                 Filter::new("label", "color=orange"),
             ],
             reap_networks: false,
+            record_image_use: None,
         },
     )
     .await
@@ -130,6 +133,7 @@ async fn reap_networks() {
             max_age: None,
             filters: &vec![Filter::new("label", TEST_LABEL)],
             reap_networks: true,
+            record_image_use: None,
         },
     )
     .await
@@ -158,6 +162,7 @@ async fn dry_run() {
             max_age: None,
             filters: &vec![Filter::new("label", TEST_LABEL)],
             reap_networks: true,
+            record_image_use: None,
         },
     )
     .await
@@ -181,5 +186,89 @@ async fn dry_run() {
         true
     );
     assert_eq!(container_exists(&container_id).await, true);
+    cleanup().await;
+}
+
+/// Test that `record_image_use` stamps the image of every matching container, including one
+/// too young to reap; that the run creating the record starts it with every image already on
+/// the host at 0, and a later run neither does that again nor drops entries; and that a dry
+/// run leaves the record alone.
+#[tokio::test]
+#[serial]
+async fn record_image_use() {
+    let RunContainerResult { container_id, .. } = run_container(false, None).await;
+    let image_id = docker_client()
+        .inspect_container(&container_id, None)
+        .await
+        .expect("failed to inspect container")
+        .image
+        .expect("container has no image id");
+    let dir = std::env::temp_dir().join(format!(
+        "docker-reaper-record-image-use-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("image-use");
+    let filters = vec![Filter::new("label", TEST_LABEL)];
+    let config = |dry_run| ReapContainersConfig {
+        dry_run,
+        min_age: Some(Duration::from_secs(3600)),
+        max_age: None,
+        filters: &filters,
+        reap_networks: false,
+        record_image_use: Some(path.clone()),
+    };
+
+    reap_containers(docker_client(), &config(true))
+        .await
+        .expect("failed to reap containers");
+    assert!(!path.exists(), "a dry run wrote the record");
+
+    let before = crate::usage::now_secs();
+    reap_containers(docker_client(), &config(false))
+        .await
+        .expect("failed to reap containers");
+    let record = crate::usage::load(&path).expect("failed to read the record");
+    let stamp = *record
+        .get(&image_id)
+        .expect("the container's image was not recorded");
+    assert!(
+        stamp >= before,
+        "stamp {stamp} predates the run at {before}"
+    );
+    assert!(
+        container_exists(&container_id).await,
+        "the container was too young to reap"
+    );
+    // Other containers may be using other images, but none carries TEST_LABEL.
+    let on_host = docker_client()
+        .list_images(None::<bollard::query_parameters::ListImagesOptions>)
+        .await
+        .expect("failed to list images");
+    for image in on_host.iter().filter(|image| image.id != image_id) {
+        assert_eq!(
+            record.get(&image.id),
+            Some(&0),
+            "{} was on the host when the record started",
+            image.id
+        );
+    }
+
+    let mut edited = record.clone();
+    edited.insert("sha256:gone".to_string(), 5);
+    crate::usage::save(&path, &edited).unwrap();
+    reap_containers(docker_client(), &config(false))
+        .await
+        .expect("failed to reap containers");
+    let record = crate::usage::load(&path).expect("failed to read the record");
+    assert_eq!(
+        record.get("sha256:gone"),
+        Some(&5),
+        "a later run must leave other entries alone"
+    );
+    assert!(record[&image_id] >= stamp);
+
+    std::fs::remove_dir_all(&dir).ok();
     cleanup().await;
 }

@@ -7,7 +7,8 @@
 //! patterns as the other subcommands; the eviction policy is pure and tested
 //! here.
 
-use crate::reaper::{ImageCandidate, plan_image_evictions};
+use crate::reaper::{ImageCandidate, order_least_recently_used, plan_image_evictions};
+use crate::usage::LastUsed;
 use bollard::models::ImageSummary;
 use std::collections::HashSet;
 
@@ -68,4 +69,60 @@ fn untagged_images_fall_back_to_id() {
     let images = vec![image("sha256:aaa", None, 400, 0)];
     let plan = plan_image_evictions(&images, &HashSet::new());
     assert_eq!(plan[0].name, "sha256:aaa");
+}
+
+fn ids(plan: &[ImageCandidate]) -> Vec<&str> {
+    plan.iter().map(|c| c.id.as_str()).collect()
+}
+
+#[test]
+fn least_recently_used_evicted_first_whatever_its_size() {
+    let images = vec![
+        image("sha256:big", Some("big:1"), 5000, 0),
+        image("sha256:mid", Some("mid:1"), 800, 0),
+        image("sha256:small", Some("small:1"), 10, 0),
+    ];
+    let mut plan = plan_image_evictions(&images, &HashSet::new());
+    let last_used = LastUsed::from([
+        ("sha256:big".to_string(), 300),
+        ("sha256:mid".to_string(), 200),
+        ("sha256:small".to_string(), 100),
+    ]);
+    order_least_recently_used(&mut plan, &last_used);
+    assert_eq!(ids(&plan), vec!["sha256:small", "sha256:mid", "sha256:big"]);
+}
+
+#[test]
+fn images_last_used_together_stay_largest_first() {
+    let images = vec![
+        image("sha256:small", Some("small:1"), 10, 0),
+        image("sha256:big", Some("big:1"), 5000, 0),
+        image("sha256:recent", Some("recent:1"), 9000, 0),
+    ];
+    let mut plan = plan_image_evictions(&images, &HashSet::new());
+    let last_used = LastUsed::from([
+        ("sha256:small".to_string(), 100),
+        ("sha256:big".to_string(), 100),
+        ("sha256:recent".to_string(), 900),
+    ]);
+    order_least_recently_used(&mut plan, &last_used);
+    assert_eq!(
+        ids(&plan),
+        vec!["sha256:big", "sha256:small", "sha256:recent"]
+    );
+}
+
+#[test]
+fn an_image_missing_from_the_record_goes_last() {
+    // reap_images stamps unseen images before ordering; this is the ordering's own fallback.
+    let images = vec![
+        image("sha256:unseen", Some("unseen:1"), 5000, 0),
+        image("sha256:old", Some("old:1"), 10, 0),
+    ];
+    let mut plan = plan_image_evictions(&images, &HashSet::new());
+    order_least_recently_used(
+        &mut plan,
+        &LastUsed::from([("sha256:old".to_string(), 100)]),
+    );
+    assert_eq!(ids(&plan), vec!["sha256:old", "sha256:unseen"]);
 }

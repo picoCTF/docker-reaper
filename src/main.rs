@@ -1,5 +1,6 @@
 mod reaper;
 mod shims;
+mod usage;
 
 #[cfg(test)]
 mod tests;
@@ -70,6 +71,10 @@ struct ContainersArgs {
     /// Also attempt to remove the networks associated with reaped containers.
     #[arg(long)]
     reap_networks: bool,
+    /// Stamp the image of every matching container, old enough to reap or not, as in use
+    /// now in the record at this path, for `images --lru`. Skipped in a dry run.
+    #[arg(long, value_name = "path")]
+    record_image_use: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -117,7 +122,8 @@ struct ImagesArgs {
     /// Only reap when the measured filesystem is at least this full (percent).
     #[arg(long, value_name = "percent", default_value_t = 80, value_parser = parse_percent)]
     threshold: u8,
-    /// Remove unused images (largest first) until disk usage falls below this (percent).
+    /// Remove unused images (largest first, or least recently used with --lru) until disk
+    /// usage falls below this (percent).
     #[arg(long, value_name = "percent", default_value_t = 70, value_parser = parse_percent)]
     target: u8,
     /// Filesystem path to measure. Defaults to the docker daemon's root directory,
@@ -133,6 +139,10 @@ struct ImagesArgs {
         value_parser = parse_filter
     )]
     filters: Vec<Filter>,
+    /// Evict least recently used first, by the record `containers --record-image-use`
+    /// keeps at this path. An image the record has never seen counts as used just now.
+    #[arg(long, value_name = "path")]
+    lru: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -264,6 +274,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     max_age: args.max_age,
                     filters: &args.filters,
                     reap_networks: args.reap_networks,
+                    record_image_use: args.record_image_use.clone(),
                 };
                 reap_containers(&docker, &config).await
             }
@@ -292,6 +303,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     target: args.target,
                     disk_path: args.disk_path.clone(),
                     filters: &args.filters,
+                    lru: args.lru.clone(),
                 };
                 reap_images(&docker, &config).await
             }
