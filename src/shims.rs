@@ -227,6 +227,40 @@ pub(crate) fn task_state_dir(runtime_root: &Path, namespace: &str, container_id:
     runtime_root.join(namespace).join(container_id)
 }
 
+/// The directories under dockerd's configured data-root that hold one directory per
+/// container the daemon knows, running or stopped. userns-remap moves the daemon's root
+/// to a `<uid>.<gid>` directory below the configured one, so those count as well.
+///
+/// dockerd removes a container's directory before dropping it from its container list,
+/// and a container whose directory cannot be removed stays in the list, so a directory
+/// here always means the daemon still knows the container.
+pub(crate) fn container_dirs(data_root: &Path) -> Vec<PathBuf> {
+    let is_id = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    let mut roots = vec![data_root.to_path_buf()];
+    if let Ok(entries) = fs::read_dir(data_root) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if name
+                .to_str()
+                .and_then(|n| n.split_once('.'))
+                .is_some_and(|(uid, gid)| is_id(uid) && is_id(gid))
+            {
+                roots.push(entry.path());
+            }
+        }
+    }
+    roots
+        .into_iter()
+        .map(|root| root.join("containers"))
+        .filter(|dir| dir.is_dir())
+        .collect()
+}
+
+/// Whether any of `dirs` (from `container_dirs`) holds the container's directory.
+pub(crate) fn container_on_disk(dirs: &[PathBuf], container_id: &str) -> bool {
+    dirs.iter().any(|dir| dir.join(container_id).is_dir())
+}
+
 /// Reads the system uptime from `/proc/uptime`.
 pub(crate) fn uptime(proc_root: &Path) -> io::Result<Duration> {
     let raw = fs::read_to_string(proc_root.join("uptime"))?;
@@ -532,6 +566,44 @@ mod tests {
         // Process gone.
         fs::remove_dir_all(root.join("777")).unwrap();
         assert!(!still_same_shim(&root, &shim));
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn finds_the_containers_directory_plain_and_under_userns_remap() {
+        let root = fixture_root("dirs-plain");
+        assert!(
+            container_dirs(&root).is_empty(),
+            "no containers directory yet"
+        );
+        fs::create_dir_all(root.join("containers")).unwrap();
+        assert_eq!(container_dirs(&root), vec![root.join("containers")]);
+        fs::remove_dir_all(&root).ok();
+
+        let root = fixture_root("dirs-remap");
+        fs::create_dir_all(root.join("100000.100000").join("containers")).unwrap();
+        // Neither is a remap root: the shape is <uid>.<gid>, both numeric.
+        fs::create_dir_all(root.join("tmp.1").join("containers")).unwrap();
+        fs::create_dir_all(root.join("100000").join("containers")).unwrap();
+        assert_eq!(
+            container_dirs(&root),
+            vec![root.join("100000.100000").join("containers")]
+        );
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_container_is_on_disk_only_with_its_directory() {
+        let root = fixture_root("on-disk");
+        let dir = root.join("containers");
+        fs::create_dir_all(dir.join(CID_A)).unwrap();
+        // A file of the right name is not a container's directory.
+        fs::write(dir.join(CID_B), "").unwrap();
+        let dirs = vec![dir];
+        assert!(container_on_disk(&dirs, CID_A));
+        assert!(!container_on_disk(&dirs, CID_B));
+        assert!(!container_on_disk(&dirs, CID_C));
+        assert!(!container_on_disk(&[], CID_A));
         fs::remove_dir_all(&root).ok();
     }
 

@@ -52,6 +52,10 @@ pub(crate) struct ReapShimsConfig {
     pub(crate) proc_root: PathBuf,
     /// Root of containerd's v2 runtime task state, used only to enrich reporting.
     pub(crate) runtime_root: PathBuf,
+    /// dockerd's configured data-root. A shim whose container still has a directory under
+    /// it belongs to a container the daemon knows, so it is spared without asking; the
+    /// daemon's container list is only fetched when some shim is left to check.
+    pub(crate) data_root: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -825,7 +829,8 @@ pub(crate) async fn reap_images(
 /// A shim is only signalled once it has passed three checks:
 ///
 /// 1. Its container id is absent from `list_containers(all)`, so neither a running nor a
-///    stopped container claims it.
+///    stopped container claims it. With `data_root` set, a container that still has a
+///    directory there is known to the daemon and spared without asking.
 /// 2. It has been alive for at least `min_age`, sparing anything mid-creation.
 /// 3. Both of the above still hold after `settle`, and its argv still names the same
 ///    container. The re-read closes the window where a container has just been removed
@@ -868,8 +873,19 @@ pub(crate) async fn reap_shims(
         );
     }
 
-    let live_containers = list_container_ids(docker).await?;
-    let candidates: Vec<ShimProcess> = all_shims
+    let container_dirs = config.data_root.as_deref().map(shims::container_dirs);
+    if let (Some(root), Some(dirs)) = (&config.data_root, &container_dirs)
+        && dirs.is_empty()
+    {
+        warn!(
+            "No containers directory under {}; every shim will be checked against the daemon",
+            root.display()
+        );
+    }
+
+    // The checks that need only /proc and the filesystem run first, so the daemon's
+    // container list is fetched only when some shim survives them.
+    let mut candidates: Vec<ShimProcess> = all_shims
         .into_iter()
         .filter(|shim| {
             if shim.namespace != config.namespace {
@@ -879,7 +895,9 @@ pub(crate) async fn reap_shims(
                 );
                 return false;
             }
-            if live_containers.contains(&shim.container_id) {
+            if let Some(ref dirs) = container_dirs
+                && shims::container_on_disk(dirs, &shim.container_id)
+            {
                 return false;
             }
             if shim.age < config.min_age {
@@ -906,6 +924,11 @@ pub(crate) async fn reap_shims(
         })
         .collect();
 
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+    let live_containers = list_container_ids(docker).await?;
+    candidates.retain(|shim| !live_containers.contains(&shim.container_id));
     if candidates.is_empty() {
         return Ok(Vec::new());
     }

@@ -113,6 +113,12 @@ Key flags for `docker-reaper shims`:
 - `--namespace <name>`: containerd namespace to sweep (default: `moby`, which is Docker's).
 - `--proc-root <path>` / `--runtime-root <path>`: Override the filesystem locations, mainly
   for testing.
+- `--data-root <path>`: dockerd's configured data-root. dockerd keeps a directory there for
+  every container it knows, running or stopped, and removes it before dropping the container
+  from its list, so a shim whose container still has one is spared without asking the
+  daemon. The container list is then only fetched when some shim is left to check, which
+  on a healthy host is never. userns-remap's `<uid>.<gid>` root below the data-root is
+  searched too.
 
 A shim is only signalled once it has passed four checks:
 
@@ -127,7 +133,8 @@ A shim is only signalled once it has passed four checks:
    than the target's, so it rejects a process wearing a shim's argv; an unreadable link
    keeps the candidate, since sparing a real orphan is the worse failure.
 2. Its container id is absent from the full container list, so neither a running nor a
-   stopped container claims it.
+   stopped container claims it. With `--data-root`, a container directory on disk answers
+   this without the list.
 3. It has been alive for at least `--min-age`, sparing anything mid-creation.
 4. Checks 2 and 3 still hold after `--settle`, and its `/proc/<pid>/cmdline` still names
    the same container. The re-read closes the window where a container has just been

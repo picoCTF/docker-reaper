@@ -161,6 +161,10 @@ struct ShimsArgs {
     /// Root of containerd's v2 runtime task state. Used only to enrich output.
     #[arg(long, value_name = "path", default_value = shims::DEFAULT_RUNTIME_ROOT)]
     runtime_root: PathBuf,
+    /// dockerd's configured data-root. Shims whose container still has a directory there
+    /// are spared without asking the daemon, which is then only asked about the rest.
+    #[arg(long, value_name = "path")]
+    data_root: Option<PathBuf>,
 }
 
 fn parse_percent(value: &str) -> Result<u8, anyhow::Error> {
@@ -300,6 +304,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     grace: args.grace,
                     proc_root: args.proc_root.clone(),
                     runtime_root: args.runtime_root.clone(),
+                    data_root: args.data_root.clone(),
                 };
                 reap_shims(&docker, &config).await
             }
