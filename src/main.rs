@@ -73,7 +73,7 @@ struct ContainersArgs {
     reap_networks: bool,
     /// Stamp the image of every matching container, old enough to reap or not, as in use
     /// now in the record at this path, for `images --lru`. Skipped in a dry run.
-    #[arg(long, value_name = "path")]
+    #[arg(long, value_name = "path", overrides_with = "record_image_use")]
     record_image_use: Option<PathBuf>,
 }
 
@@ -141,7 +141,7 @@ struct ImagesArgs {
     filters: Vec<Filter>,
     /// Evict least recently used first, by the record `containers --record-image-use`
     /// keeps at this path. An image the record has never seen counts as used just now.
-    #[arg(long, value_name = "path")]
+    #[arg(long, value_name = "path", overrides_with = "lru")]
     lru: Option<PathBuf>,
 }
 
@@ -173,7 +173,7 @@ struct ShimsArgs {
     runtime_root: PathBuf,
     /// dockerd's configured data-root. Shims whose container still has a directory there
     /// are spared without asking the daemon, which is then only asked about the rest.
-    #[arg(long, value_name = "path")]
+    #[arg(long, value_name = "path", overrides_with = "data_root")]
     data_root: Option<PathBuf>,
 }
 
