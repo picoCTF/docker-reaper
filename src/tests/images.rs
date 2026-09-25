@@ -1,11 +1,11 @@
 //! Unit tests for image eviction planning.
 //!
-//! Unlike the other resource types, these do not run against a live Docker
-//! daemon: an integration test would have to delete the host's real images
-//! (eligibility depends on global disk usage, which a test cannot safely
-//! manufacture). The docker-facing plumbing reuses the same list/remove
-//! patterns as the other subcommands; the eviction policy is pure and tested
-//! here.
+//! Unlike the other resource types, these mostly do not run against a live
+//! Docker daemon: an integration test that evicts would have to delete the
+//! host's real images (eligibility depends on global disk usage, which a test
+//! cannot safely manufacture). The docker-facing plumbing reuses the same
+//! list/remove patterns as the other subcommands; the eviction policy is pure
+//! and tested here. The one live test filters to no image at all.
 
 use crate::reaper::{
     ImageCandidate, defer_small, describe_image, order_least_recently_used, plan_image_evictions,
@@ -244,4 +244,66 @@ fn small_images_wait_until_nothing_larger_is_left() {
     let before = ids(&plan).iter().map(|s| s.to_string()).collect::<Vec<_>>();
     defer_small(&mut plan, 0);
     assert_eq!(ids(&plan), before, "0 leaves the order alone");
+}
+
+/// An eviction pass rewrites a record it read, and leaves one it could not read exactly as
+/// it was: replacing it would wipe the history it holds. Against the live daemon, but safe:
+/// the threshold forces a pass, and the filter matches no image, so nothing is removed.
+#[tokio::test]
+#[serial_test::serial]
+async fn an_unreadable_record_is_left_as_it_is() {
+    use crate::reaper::{Filter, ReapImagesConfig, reap_images};
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    if rustix::process::getuid().is_root() {
+        eprintln!("skipped: permissions do not stop root reading the record");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!(
+        "docker-reaper-unreadable-record-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("image-use");
+    std::fs::write(&path, "100 sha256:aaa\n").unwrap();
+    let filters = vec![Filter::new(
+        "reference",
+        "docker-reaper-test-matches-nothing/*",
+    )];
+    let config = ReapImagesConfig {
+        dry_run: false,
+        threshold: 1,
+        target: 0,
+        disk_path: Some(dir.clone()),
+        filters: &filters,
+        lru: Some(path.clone()),
+        min_size: 0,
+    };
+    let sweep = || async {
+        reap_images(super::common::docker_client(), &config)
+            .await
+            .expect("failed to run the images sweep")
+    };
+
+    let before = std::fs::metadata(&path).unwrap().ino();
+    assert!(sweep().await.is_empty(), "the filter matched an image");
+    let after = std::fs::metadata(&path).unwrap().ino();
+    assert_ne!(before, after, "a record that was read was not rewritten");
+
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+    sweep().await;
+    let meta = std::fs::metadata(&path).unwrap();
+    assert_eq!(
+        meta.ino(),
+        after,
+        "a record that could not be read was replaced"
+    );
+    assert_eq!(
+        meta.mode() & 0o777,
+        0,
+        "a record that could not be read was replaced"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
 }

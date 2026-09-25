@@ -767,6 +767,15 @@ pub(crate) fn defer_small(candidates: &mut [ImageCandidate], min_size: u64) {
     candidates.sort_by_key(|c| c.unique_size < min_size);
 }
 
+/// The record an eviction pass read, for reporting: none when it could not be read, since
+/// every image in the stand-in counts as used just now and saying so would mislead.
+fn known_use(last_used: &Option<(LastUsed, bool)>) -> Option<&LastUsed> {
+    last_used
+        .as_ref()
+        .filter(|(_, read)| *read)
+        .map(|(record, _)| record)
+}
+
 /// An image's size, and when it was last used if the record says.
 pub(crate) fn describe_image(
     candidate: &ImageCandidate,
@@ -930,7 +939,7 @@ pub(crate) async fn reap_images(
                 };
                 Resource {
                     resource_type: ResourceType::Image,
-                    details: describe_image(&candidate, last_used.as_ref().map(|(r, _)| r), now),
+                    details: describe_image(&candidate, known_use(&last_used), now),
                     id: candidate.id,
                     name: candidate.name,
                     status,
@@ -955,7 +964,7 @@ pub(crate) async fn reap_images(
         }
         let mut resource = Resource {
             resource_type: ResourceType::Image,
-            details: describe_image(&candidate, last_used.as_ref().map(|(r, _)| r), now),
+            details: describe_image(&candidate, known_use(&last_used), now),
             id: candidate.id,
             name: candidate.name,
             status: RemovalStatus::Eligible,

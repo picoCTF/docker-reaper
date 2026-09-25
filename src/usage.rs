@@ -22,13 +22,16 @@ pub(crate) fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// Reads the record. A missing file is an empty record, and a malformed line is skipped.
+/// Reads the record. A missing file is an empty record, and a malformed line is skipped,
+/// including one that is not UTF-8: a record that cannot be read is never rewritten, so
+/// one bad byte refusing the whole file would turn LRU off for good.
 pub(crate) fn load(path: &Path) -> io::Result<LastUsed> {
-    let text = match fs::read_to_string(path) {
-        Ok(text) => text,
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(LastUsed::new()),
         Err(e) => return Err(e),
     };
+    let text = String::from_utf8_lossy(&bytes);
     let mut record = LastUsed::new();
     for line in text.lines() {
         let Some((secs, id)) = line.split_once(' ') else {
@@ -70,13 +73,18 @@ pub(crate) fn save(path: &Path, record: &LastUsed) -> io::Result<()> {
     written
 }
 
-/// Whether a save could create its temporary file, checked by creating and removing it.
-/// Starting a record costs an image list, so a record that could never be saved must not
-/// start one on every run.
+/// Whether a save could write its temporary file, checked by writing and syncing a few bytes
+/// and removing it; creating an empty file still succeeds on a full filesystem. Starting a
+/// record costs an image list, so a record that could never be saved must not start one on
+/// every run.
 pub(crate) fn writable(path: &Path) -> io::Result<()> {
     let tmp = tmp_path(path);
-    fs::File::create(&tmp)?;
-    fs::remove_file(&tmp)
+    let probe = fs::File::create(&tmp).and_then(|mut file| {
+        file.write_all(b"0 probe\n")?;
+        file.sync_all()
+    });
+    let removed = fs::remove_file(&tmp);
+    probe.and(removed)
 }
 
 /// Per process, so two writers never share a temporary file.
@@ -167,6 +175,24 @@ mod tests {
         writable(&path).unwrap();
         assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 0);
         assert!(writable(&path.parent().unwrap().join("missing").join("image-use")).is_err());
+    }
+
+    #[test]
+    fn a_line_that_is_not_utf8_costs_only_itself() {
+        let path = fixture("not-utf8");
+        fs::write(
+            &path,
+            b"100 sha256:aaa\n\xff\xfe 5 junk\n200 sha256:b\xffb\n300 sha256:ccc\n",
+        )
+        .unwrap();
+        let record = load(&path).unwrap();
+        assert_eq!(record.get("sha256:aaa"), Some(&100));
+        assert_eq!(record.get("sha256:ccc"), Some(&300));
+        assert_eq!(
+            record.len(),
+            3,
+            "the mangled id is kept as an id that matches no image"
+        );
     }
 
     #[test]

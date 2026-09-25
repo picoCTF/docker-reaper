@@ -113,7 +113,10 @@ $ docker-reaper images --threshold 80 --target 70 --lru /var/lib/docker-reaper/i
   largest reclaimable size, as the default order does. An image the record has never seen
   arrived after the record started — most likely pulled for a launch whose container does
   not exist yet — so it counts as used just now. A record it cannot read is left as it is,
-  and that pass orders by size alone.
+  and that pass orders by size alone; a line in it that cannot be parsed costs only that
+  line. With `--min-size`, size comes first: every image that would free at least that much
+  goes before any that would not, so a large image used a minute ago, or pulled just now,
+  goes before a small one unused for weeks.
 
 Repeating `--record-image-use`, `--lru` or `--data-root` keeps the last value, so a
 deployment can append them to a command that may already carry them.
