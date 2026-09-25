@@ -86,6 +86,7 @@ Key flags for `docker-reaper images`:
 - `--disk-path <path>`: Filesystem path to measure disk usage on. Defaults to the Docker daemon's root directory (`docker_root_dir`). Note: when targeting a remote daemon via `DOCKER_HOST`, `--disk-path` must be explicitly specified because disk measurement operates on local storage.
 - `-f, --filter <name=value>`: Only reap images matching Docker Engine-supported filters (can be specified multiple times).
 - `--lru <path>`: Evict least recently used first, by the record at this path (see below).
+- `--min-size <size>`: Evict images that would free less than this (e.g. `256MiB`, `1G`; binary units) only once no larger candidate is left. Deleting an image holds dockerd's image and layer store locks until its files are gone, stalling every container create and image pull on the host meanwhile, so a removal should free something worth that. Default `0`, which leaves the order alone.
 
 Images are selected and evicted largest-unique-size first (reclaimable bytes not shared with other images) until disk usage drops below the target percentage. Non-forced removals skip images that gain containers mid-run.
 

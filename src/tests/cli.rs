@@ -1,6 +1,6 @@
 //! Command-line parsing.
 
-use crate::{Cli, Commands};
+use crate::{Cli, Commands, parse_size};
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -60,4 +60,22 @@ fn filters_still_accumulate() {
         panic!("not the images subcommand");
     };
     assert_eq!(args.filters.len(), 2);
+}
+
+#[test]
+fn sizes_parse_with_binary_units() {
+    for (text, bytes) in [
+        ("0", 0),
+        ("512", 512),
+        ("64K", 64 << 10),
+        ("256MiB", 256 << 20),
+        ("256mb", 256 << 20),
+        ("1G", 1 << 30),
+        ("2GiB", 2 << 30),
+    ] {
+        assert_eq!(parse_size(text).unwrap(), bytes, "{text}");
+    }
+    for bad in ["", "M", "1.5G", "10T", "-1", "1 G"] {
+        assert!(parse_size(bad).is_err(), "{bad} should not parse");
+    }
 }

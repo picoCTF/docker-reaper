@@ -8,8 +8,8 @@
 //! here.
 
 use crate::reaper::{
-    ImageCandidate, describe_image, order_least_recently_used, plan_image_evictions, settle_record,
-    stamp_for_eviction,
+    ImageCandidate, defer_small, describe_image, order_least_recently_used, plan_image_evictions,
+    settle_record, stamp_for_eviction,
 };
 use crate::usage::LastUsed;
 use bollard::models::ImageSummary;
@@ -209,4 +209,39 @@ fn settling_drops_removed_images_and_prunes_only_after_a_complete_listing() {
             ("sha256:unlisted".to_string(), 3),
         ])
     );
+}
+
+#[test]
+fn small_images_wait_until_nothing_larger_is_left() {
+    let images = vec![
+        image("sha256:small-old", Some("small-old:1"), 50, 0),
+        image("sha256:big-new", Some("big-new:1"), 900, 0),
+        image("sha256:big-old", Some("big-old:1"), 600, 0),
+        image("sha256:small-new", Some("small-new:1"), 40, 0),
+    ];
+    let mut plan = plan_image_evictions(&images, &HashSet::new());
+    order_least_recently_used(
+        &mut plan,
+        &LastUsed::from([
+            ("sha256:small-old".to_string(), 1),
+            ("sha256:big-old".to_string(), 2),
+            ("sha256:small-new".to_string(), 3),
+            ("sha256:big-new".to_string(), 4),
+        ]),
+    );
+    defer_small(&mut plan, 100);
+    assert_eq!(
+        ids(&plan),
+        vec![
+            "sha256:big-old",
+            "sha256:big-new",
+            "sha256:small-old",
+            "sha256:small-new"
+        ],
+        "large ones first, least recently used first within each group"
+    );
+
+    let before = ids(&plan).iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    defer_small(&mut plan, 0);
+    assert_eq!(ids(&plan), before, "0 leaves the order alone");
 }

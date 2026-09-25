@@ -102,6 +102,9 @@ pub(crate) struct ReapImagesConfig<'a> {
     /// Evict least recently used first, by the record at this path, rather than largest
     /// unique size first.
     pub(crate) lru: Option<PathBuf>,
+    /// Images that would reclaim less than this many bytes are evicted only once no
+    /// larger candidate is left.
+    pub(crate) min_size: u64,
 }
 
 #[derive(Debug)]
@@ -756,6 +759,14 @@ pub(crate) fn order_least_recently_used(candidates: &mut [ImageCandidate], last_
     candidates.sort_by_key(|c| last_used.get(&c.id).copied().unwrap_or(u64::MAX));
 }
 
+/// Moves candidates that would reclaim less than `min_size` behind every larger one,
+/// keeping the order within each group. Each removal stalls the daemon's creates and
+/// pulls while it runs, so one should free something worth it; the small ones stay
+/// candidates for when nothing larger is left.
+pub(crate) fn defer_small(candidates: &mut [ImageCandidate], min_size: u64) {
+    candidates.sort_by_key(|c| c.unique_size < min_size);
+}
+
 /// An image's size, and when it was last used if the record says.
 pub(crate) fn describe_image(
     candidate: &ImageCandidate,
@@ -901,6 +912,7 @@ pub(crate) async fn reap_images(
         stamp_for_eviction(record, &in_use, &images, now);
         order_least_recently_used(&mut candidates, record);
     }
+    defer_small(&mut candidates, config.min_size);
     let target_bytes = (config.target as u64) * (capacity / 100);
 
     if config.dry_run {

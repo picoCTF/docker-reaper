@@ -143,6 +143,10 @@ struct ImagesArgs {
     /// keeps at this path. An image the record has never seen counts as used just now.
     #[arg(long, value_name = "path", overrides_with = "lru")]
     lru: Option<PathBuf>,
+    /// Evict images that would free less than this (e.g. 256MiB, 1G) only once no larger
+    /// candidate is left. Units are binary: K, M and G mean KiB, MiB and GiB.
+    #[arg(long, value_name = "size", value_parser = parse_size, default_value = "0")]
+    min_size: u64,
 }
 
 #[derive(Debug, Args)]
@@ -175,6 +179,28 @@ struct ShimsArgs {
     /// are spared without asking the daemon, which is then only asked about the rest.
     #[arg(long, value_name = "path", overrides_with = "data_root")]
     data_root: Option<PathBuf>,
+}
+
+/// A byte count with an optional binary unit: 512, 64K, 256MiB, 1G. Binary like Docker's
+/// own size options, so "1GB" here is 1 GiB.
+fn parse_size(value: &str) -> Result<u64, anyhow::Error> {
+    let split = value
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(value.len());
+    let (number, unit) = value.split_at(split);
+    let number: u64 = number
+        .parse()
+        .with_context(|| format!("sizes must start with a whole number: {value}"))?;
+    let shift = match unit.to_ascii_lowercase().as_str() {
+        "" | "b" => 0,
+        "k" | "kb" | "kib" => 10,
+        "m" | "mb" | "mib" => 20,
+        "g" | "gb" | "gib" => 30,
+        _ => anyhow::bail!("unknown size unit in {value}: use B, K, M or G"),
+    };
+    number
+        .checked_mul(1 << shift)
+        .with_context(|| format!("size too large: {value}"))
 }
 
 fn parse_percent(value: &str) -> Result<u8, anyhow::Error> {
@@ -304,6 +330,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     disk_path: args.disk_path.clone(),
                     filters: &args.filters,
                     lru: args.lru.clone(),
+                    min_size: args.min_size,
                 };
                 reap_images(&docker, &config).await
             }
