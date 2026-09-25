@@ -1,5 +1,6 @@
 mod reaper;
 mod shims;
+mod usage;
 
 #[cfg(test)]
 mod tests;
@@ -70,6 +71,10 @@ struct ContainersArgs {
     /// Also attempt to remove the networks associated with reaped containers.
     #[arg(long)]
     reap_networks: bool,
+    /// Stamp the image of every matching container, old enough to reap or not, as in use
+    /// now in the record at this path, for `images --lru`. Skipped in a dry run.
+    #[arg(long, value_name = "path", overrides_with = "record_image_use")]
+    record_image_use: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -117,7 +122,8 @@ struct ImagesArgs {
     /// Only reap when the measured filesystem is at least this full (percent).
     #[arg(long, value_name = "percent", default_value_t = 80, value_parser = parse_percent)]
     threshold: u8,
-    /// Remove unused images (largest first) until disk usage falls below this (percent).
+    /// Remove unused images (largest first, or least recently used with --lru) until disk
+    /// usage falls below this (percent).
     #[arg(long, value_name = "percent", default_value_t = 70, value_parser = parse_percent)]
     target: u8,
     /// Filesystem path to measure. Defaults to the docker daemon's root directory,
@@ -133,6 +139,14 @@ struct ImagesArgs {
         value_parser = parse_filter
     )]
     filters: Vec<Filter>,
+    /// Evict least recently used first, by the record `containers --record-image-use`
+    /// keeps at this path. An image the record has never seen counts as used just now.
+    #[arg(long, value_name = "path", overrides_with = "lru")]
+    lru: Option<PathBuf>,
+    /// Evict images that would free less than this (e.g. 256MiB, 1G) only once no larger
+    /// candidate is left. Units are binary: K, M and G mean KiB, MiB and GiB.
+    #[arg(long, value_name = "size", value_parser = parse_size, default_value = "0")]
+    min_size: u64,
 }
 
 #[derive(Debug, Args)]
@@ -161,6 +175,32 @@ struct ShimsArgs {
     /// Root of containerd's v2 runtime task state. Used only to enrich output.
     #[arg(long, value_name = "path", default_value = shims::DEFAULT_RUNTIME_ROOT)]
     runtime_root: PathBuf,
+    /// dockerd's configured data-root. Shims whose container still has a directory there
+    /// are spared without asking the daemon, which is then only asked about the rest.
+    #[arg(long, value_name = "path", overrides_with = "data_root")]
+    data_root: Option<PathBuf>,
+}
+
+/// A byte count with an optional binary unit: 512, 64K, 256MiB, 1G. Binary like Docker's
+/// own size options, so "1GB" here is 1 GiB.
+fn parse_size(value: &str) -> Result<u64, anyhow::Error> {
+    let split = value
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(value.len());
+    let (number, unit) = value.split_at(split);
+    let number: u64 = number
+        .parse()
+        .with_context(|| format!("sizes must start with a whole number: {value}"))?;
+    let shift = match unit.to_ascii_lowercase().as_str() {
+        "" | "b" => 0,
+        "k" | "kb" | "kib" => 10,
+        "m" | "mb" | "mib" => 20,
+        "g" | "gb" | "gib" => 30,
+        _ => anyhow::bail!("unknown size unit in {value}: use B, K, M or G"),
+    };
+    number
+        .checked_mul(1 << shift)
+        .with_context(|| format!("size too large: {value}"))
 }
 
 fn parse_percent(value: &str) -> Result<u8, anyhow::Error> {
@@ -260,6 +300,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     max_age: args.max_age,
                     filters: &args.filters,
                     reap_networks: args.reap_networks,
+                    record_image_use: args.record_image_use.clone(),
                 };
                 reap_containers(&docker, &config).await
             }
@@ -288,6 +329,8 @@ async fn main() -> Result<(), anyhow::Error> {
                     target: args.target,
                     disk_path: args.disk_path.clone(),
                     filters: &args.filters,
+                    lru: args.lru.clone(),
+                    min_size: args.min_size,
                 };
                 reap_images(&docker, &config).await
             }
@@ -300,6 +343,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     grace: args.grace,
                     proc_root: args.proc_root.clone(),
                     runtime_root: args.runtime_root.clone(),
+                    data_root: args.data_root.clone(),
                 };
                 reap_shims(&docker, &config).await
             }

@@ -21,6 +21,10 @@ $ docker-reaper volumes --min-age 10m --dry-run
 # Evict unused images (largest reclaimable first) when disk usage exceeds 80% until reaching 70%
 $ docker-reaper images --threshold 80 --target 70
 
+# The same, least recently used first, by the record the container sweep keeps
+$ docker-reaper containers --min-age 30m --record-image-use /var/lib/docker-reaper/image-use
+$ docker-reaper images --threshold 80 --target 70 --lru /var/lib/docker-reaper/image-use
+
 # Sweep containerd shims left behind by containers that no longer exist
 $ docker-reaper shims --min-age 10m
 ```
@@ -81,8 +85,49 @@ Key flags for `docker-reaper images`:
 - `--target <percent>`: Remove unused images until disk usage falls below this percentage (default: `70`).
 - `--disk-path <path>`: Filesystem path to measure disk usage on. Defaults to the Docker daemon's root directory (`docker_root_dir`). Note: when targeting a remote daemon via `DOCKER_HOST`, `--disk-path` must be explicitly specified because disk measurement operates on local storage.
 - `-f, --filter <name=value>`: Only reap images matching Docker Engine-supported filters (can be specified multiple times).
+- `--lru <path>`: Evict least recently used first, by the record at this path (see below).
+- `--min-size <size>`: Evict images that would free less than this (e.g. `256MiB`, `1G`; binary units) only once no larger candidate is left. Deleting an image holds dockerd's image and layer store locks until its files are gone, stalling every container create and image pull on the host meanwhile, so a removal should free something worth that. Default `0`, which leaves the order alone.
 
 Images are selected and evicted largest-unique-size first (reclaimable bytes not shared with other images) until disk usage drops below the target percentage. Non-forced removals skip images that gain containers mid-run.
+
+#### Least recently used first
+
+Docker records nothing about when an image was last used: the Engine API has no such field,
+and a pull does not set `LastTagTime`. So `--lru` reads a record kept by the container
+sweep instead:
+
+```bash
+$ docker-reaper containers --min-age 30m --record-image-use /var/lib/docker-reaper/image-use
+$ docker-reaper images --threshold 80 --target 70 --lru /var/lib/docker-reaper/image-use
+```
+
+- `containers --record-image-use <path>` stamps the image of every container the sweep
+  matches, old enough to reap or not, as in use now. It uses the container list the sweep
+  fetches anyway, so it adds no call to the daemon; the one exception is the run that
+  creates the record, which lists images once and stamps every image already on the host
+  at 0, older than anything seen since. It starts the record only once it has checked it
+  could save it, so a record that cannot be written never costs that list on every run.
+  Nothing is written in a dry run, and a record that cannot be written never stops the sweep
+  reaping containers.
+- `images --lru <path>` evicts in order of those stamps, oldest first, and breaks ties by
+  largest reclaimable size, as the default order does. An image the record has never seen
+  arrived after the record started — most likely pulled for a launch whose container does
+  not exist yet — so it counts as used just now. A record it cannot read is left as it is,
+  and that pass orders by size alone; a line in it that cannot be parsed costs only that
+  line. With `--min-size`, size comes first: every image that would free at least that much
+  goes before any that would not, so a large image used a minute ago, or pulled just now,
+  goes before a small one unused for weeks.
+
+Repeating `--record-image-use`, `--lru` or `--data-root` keeps the last value, so a
+deployment can append them to a command that may already carry them.
+
+Sampling is as frequent as the container sweep runs, so a container that comes and goes
+between two runs is not seen. The record is a text file, `<unix seconds> <image id>` per
+line; deleting it starts it over.
+
+One case it cannot see: an image removed by something other than this sweep, then pulled
+again before the next eviction pass, keeps the stamp it had. Noticing the removal in between
+would take an image list every run. After removing images by hand, delete the record.
 
 ### Orphaned containerd shim sweep
 
@@ -113,6 +158,12 @@ Key flags for `docker-reaper shims`:
 - `--namespace <name>`: containerd namespace to sweep (default: `moby`, which is Docker's).
 - `--proc-root <path>` / `--runtime-root <path>`: Override the filesystem locations, mainly
   for testing.
+- `--data-root <path>`: dockerd's configured data-root. dockerd keeps a directory there for
+  every container it knows, running or stopped, and removes it before dropping the container
+  from its list, so a shim whose container still has one is spared without asking the
+  daemon. The container list is then only fetched when some shim is left to check, which
+  on a healthy host is never. userns-remap's `<uid>.<gid>` root below the data-root is
+  searched too.
 
 A shim is only signalled once it has passed four checks:
 
@@ -127,7 +178,8 @@ A shim is only signalled once it has passed four checks:
    than the target's, so it rejects a process wearing a shim's argv; an unreadable link
    keeps the candidate, since sparing a real orphan is the worse failure.
 2. Its container id is absent from the full container list, so neither a running nor a
-   stopped container claims it.
+   stopped container claims it. With `--data-root`, a container directory on disk answers
+   this without the list.
 3. It has been alive for at least `--min-age`, sparing anything mid-creation.
 4. Checks 2 and 3 still hold after `--settle`, and its `/proc/<pid>/cmdline` still names
    the same container. The re-read closes the window where a container has just been

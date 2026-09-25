@@ -16,6 +16,7 @@ use std::process::Command;
 
 use super::common::{RunContainerResult, cleanup, docker_client, run_container};
 use crate::reaper::{ReapShimsConfig, RemovalStatus, ResourceType, reap_shims};
+use bollard::Docker;
 use serial_test::serial;
 use tokio::time::Duration;
 
@@ -102,6 +103,7 @@ fn config(root: &Path, min_age: Duration) -> ReapShimsConfig {
         grace: Duration::from_millis(1),
         proc_root: root.to_path_buf(),
         runtime_root: root.join("no-task-state"),
+        data_root: None,
     }
 }
 
@@ -332,6 +334,7 @@ async fn a_process_wearing_a_shims_argv_is_not_selected() {
             grace: Duration::ZERO,
             proc_root: PathBuf::from("/proc"),
             runtime_root: PathBuf::from("/nonexistent"),
+            data_root: None,
         },
     )
     .await
@@ -386,6 +389,7 @@ async fn orphans_are_signalled_and_live_containers_are_spared() {
             grace: Duration::from_millis(300),
             proc_root: PathBuf::from("/proc"),
             runtime_root: PathBuf::from("/nonexistent"),
+            data_root: None,
         },
     )
     .await
@@ -420,4 +424,67 @@ async fn orphans_are_signalled_and_live_containers_are_spared() {
     let _ = impostor.wait();
 
     cleanup().await;
+}
+
+/// A data-root under `root` holding a container directory, userns-remap style, for each id.
+fn data_root_with(root: &Path, known: &[&str]) -> PathBuf {
+    let data_root = root.join("data-root");
+    let containers = data_root.join("100000.100000").join("containers");
+    fs::create_dir_all(&containers).unwrap();
+    for id in known {
+        fs::create_dir_all(containers.join(id)).unwrap();
+    }
+    data_root
+}
+
+/// A shim whose container still has a directory under the data-root belongs to a container
+/// the daemon knows, whatever the daemon is asked, and is spared.
+#[tokio::test]
+#[serial]
+async fn shims_with_a_container_directory_are_spared() {
+    let root = fixture_root("on-disk");
+    write_shim(&root, 9201, "moby", BOGUS_A, 900);
+    write_shim(&root, 9202, "moby", BOGUS_B, 900);
+    let mut cfg = config(&root, Duration::from_secs(60));
+    cfg.data_root = Some(data_root_with(&root, &[BOGUS_A]));
+
+    let found = reap_shims(docker_client(), &cfg)
+        .await
+        .expect("failed to reap shims");
+
+    let ids: Vec<&str> = found.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec![BOGUS_B],
+        "the shim with a container directory must be spared"
+    );
+
+    fs::remove_dir_all(&root).ok();
+}
+
+/// With every shim accounted for on disk, the daemon is never asked. The client points at a
+/// closed port, so any call through it fails the sweep -- which the second half confirms.
+#[tokio::test]
+#[serial]
+async fn the_daemon_is_not_asked_when_every_shim_is_on_disk() {
+    let unreachable =
+        Docker::connect_with_http("http://127.0.0.1:9", 2, bollard::API_DEFAULT_VERSION)
+            .expect("failed to build a client");
+    let root = fixture_root("no-daemon");
+    write_shim(&root, 9203, "moby", BOGUS_A, 900);
+    let mut cfg = config(&root, Duration::from_secs(60));
+    cfg.data_root = Some(data_root_with(&root, &[BOGUS_A]));
+
+    let found = reap_shims(&unreachable, &cfg)
+        .await
+        .expect("the sweep asked the daemon although every shim was on disk");
+    assert!(found.is_empty());
+
+    write_shim(&root, 9204, "moby", BOGUS_B, 900);
+    assert!(
+        reap_shims(&unreachable, &cfg).await.is_err(),
+        "a shim not on disk must be checked against the daemon"
+    );
+
+    fs::remove_dir_all(&root).ok();
 }

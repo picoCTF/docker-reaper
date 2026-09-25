@@ -1,3 +1,4 @@
+mod cli;
 mod common;
 mod containers;
 mod images;
