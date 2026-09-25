@@ -723,9 +723,15 @@ pub(crate) fn order_least_recently_used(candidates: &mut [ImageCandidate], last_
 }
 
 /// An image's size, and when it was last used if the record says.
-fn describe_image(candidate: &ImageCandidate, last_used: Option<&LastUsed>, now: u64) -> String {
+pub(crate) fn describe_image(
+    candidate: &ImageCandidate,
+    last_used: Option<&LastUsed>,
+    now: u64,
+) -> String {
     let size = format_size(candidate.unique_size);
     match last_used.and_then(|record| record.get(&candidate.id)) {
+        // Stamped when the record started, not when it was used.
+        Some(0) => format!("{size}, not used since the record began"),
         Some(stamp) => format!(
             "{size}, last used {} ago",
             format_age(now.saturating_sub(*stamp))

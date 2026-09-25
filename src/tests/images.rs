@@ -7,7 +7,9 @@
 //! patterns as the other subcommands; the eviction policy is pure and tested
 //! here.
 
-use crate::reaper::{ImageCandidate, order_least_recently_used, plan_image_evictions};
+use crate::reaper::{
+    ImageCandidate, describe_image, order_least_recently_used, plan_image_evictions,
+};
 use crate::usage::LastUsed;
 use bollard::models::ImageSummary;
 use std::collections::HashSet;
@@ -125,4 +127,29 @@ fn an_image_missing_from_the_record_goes_last() {
         &LastUsed::from([("sha256:old".to_string(), 100)]),
     );
     assert_eq!(ids(&plan), vec!["sha256:old", "sha256:unseen"]);
+}
+
+#[test]
+fn describes_size_and_last_use() {
+    let candidate = |id: &str| ImageCandidate {
+        id: id.to_string(),
+        name: id.to_string(),
+        unique_size: 3 * 1024 * 1024,
+    };
+    let record = LastUsed::from([
+        ("sha256:seeded".to_string(), 0),
+        ("sha256:used".to_string(), 100_000 - 3 * 3600 - 20 * 60),
+    ]);
+    assert_eq!(
+        describe_image(&candidate("sha256:used"), Some(&record), 100_000),
+        "3.0 MiB, last used 3h20m ago"
+    );
+    assert_eq!(
+        describe_image(&candidate("sha256:seeded"), Some(&record), 100_000),
+        "3.0 MiB, not used since the record began"
+    );
+    assert_eq!(
+        describe_image(&candidate("sha256:used"), None, 100_000),
+        "3.0 MiB"
+    );
 }
