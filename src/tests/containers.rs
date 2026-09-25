@@ -272,3 +272,34 @@ async fn record_image_use() {
     std::fs::remove_dir_all(&dir).ok();
     cleanup().await;
 }
+
+/// A record that cannot be written is logged and skipped: container reaping, the sweep's
+/// actual job, carries on regardless.
+#[tokio::test]
+#[serial]
+async fn an_unwritable_record_does_not_stop_reaping() {
+    let RunContainerResult { container_id, .. } = run_container(false, None).await;
+    let path = std::env::temp_dir()
+        .join(format!("docker-reaper-no-such-dir-{}", std::process::id()))
+        .join("image-use");
+    let filters = vec![Filter::new("label", TEST_LABEL)];
+    reap_containers(
+        docker_client(),
+        &ReapContainersConfig {
+            dry_run: false,
+            min_age: None,
+            max_age: None,
+            filters: &filters,
+            reap_networks: false,
+            record_image_use: Some(path.clone()),
+        },
+    )
+    .await
+    .expect("the sweep failed on an unwritable record");
+    assert!(
+        !container_exists(&container_id).await,
+        "the container was not reaped"
+    );
+    assert!(!path.parent().unwrap().exists());
+    cleanup().await;
+}

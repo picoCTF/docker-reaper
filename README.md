@@ -104,16 +104,26 @@ $ docker-reaper images --threshold 80 --target 70 --lru /var/lib/docker-reaper/i
   matches, old enough to reap or not, as in use now. It uses the container list the sweep
   fetches anyway, so it adds no call to the daemon; the one exception is the run that
   creates the record, which lists images once and stamps every image already on the host
-  at 0, older than anything seen since. Nothing is written in a dry run.
-- `images --lru <path>` evicts in order of those stamps, oldest first, and breaks ties
-  largest first. An image the record has never seen arrived after the record started — most
-  likely pulled for a launch whose container does not exist yet — so it counts as used
-  just now. It also skips the shared-size computation, which only the largest-first order
-  needs; a dry run therefore counts each image at its full size.
+  at 0, older than anything seen since. It starts the record only once it has checked it
+  could save it, so a record that cannot be written never costs that list on every run.
+  Nothing is written in a dry run, and a record that cannot be written never stops the sweep
+  reaping containers.
+- `images --lru <path>` evicts in order of those stamps, oldest first, and breaks ties by
+  largest reclaimable size, as the default order does. An image the record has never seen
+  arrived after the record started — most likely pulled for a launch whose container does
+  not exist yet — so it counts as used just now. A record it cannot read is left as it is,
+  and that pass orders by size alone.
+
+Repeating `--record-image-use`, `--lru` or `--data-root` keeps the last value, so a
+deployment can append them to a command that may already carry them.
 
 Sampling is as frequent as the container sweep runs, so a container that comes and goes
 between two runs is not seen. The record is a text file, `<unix seconds> <image id>` per
 line; deleting it starts it over.
+
+One case it cannot see: an image removed by something other than this sweep, then pulled
+again before the next eviction pass, keeps the stamp it had. Noticing the removal in between
+would take an image list every run. After removing images by hand, delete the record.
 
 ### Orphaned containerd shim sweep
 

@@ -8,7 +8,8 @@
 //! here.
 
 use crate::reaper::{
-    ImageCandidate, describe_image, order_least_recently_used, plan_image_evictions,
+    ImageCandidate, describe_image, order_least_recently_used, plan_image_evictions, settle_record,
+    stamp_for_eviction,
 };
 use crate::usage::LastUsed;
 use bollard::models::ImageSummary;
@@ -151,5 +152,61 @@ fn describes_size_and_last_use() {
     assert_eq!(
         describe_image(&candidate("sha256:used"), None, 100_000),
         "3.0 MiB"
+    );
+}
+
+#[test]
+fn an_eviction_pass_stamps_what_is_in_use_and_what_it_has_never_seen() {
+    let images = vec![
+        image("sha256:old", Some("old:1"), 10, 0),
+        image("sha256:running", Some("running:1"), 10, 0),
+        image("sha256:pulled", Some("pulled:1"), 10, 0),
+    ];
+    let mut record = LastUsed::from([
+        ("sha256:old".to_string(), 100),
+        ("sha256:running".to_string(), 100),
+    ]);
+    stamp_for_eviction(
+        &mut record,
+        &HashSet::from(["sha256:running".to_string()]),
+        &images,
+        900,
+    );
+    assert_eq!(
+        record["sha256:old"], 100,
+        "unused and known: left as it was"
+    );
+    assert_eq!(record["sha256:running"], 900, "in use: now");
+    assert_eq!(record["sha256:pulled"], 900, "never seen: now, not oldest");
+}
+
+#[test]
+fn settling_drops_removed_images_and_prunes_only_after_a_complete_listing() {
+    let listed = vec![
+        image("sha256:kept", Some("kept:1"), 10, 0),
+        image("sha256:evicted", Some("evicted:1"), 10, 0),
+    ];
+    let fresh = || {
+        LastUsed::from([
+            ("sha256:kept".to_string(), 1),
+            ("sha256:evicted".to_string(), 2),
+            ("sha256:unlisted".to_string(), 3),
+        ])
+    };
+    let removed = HashSet::from(["sha256:evicted"]);
+
+    let mut record = fresh();
+    settle_record(&mut record, &listed, &removed, true);
+    assert_eq!(record, LastUsed::from([("sha256:kept".to_string(), 1)]));
+
+    // A filtered listing leaves out images that still exist: keep what it did not show.
+    let mut record = fresh();
+    settle_record(&mut record, &listed, &removed, false);
+    assert_eq!(
+        record,
+        LastUsed::from([
+            ("sha256:kept".to_string(), 1),
+            ("sha256:unlisted".to_string(), 3),
+        ])
     );
 }

@@ -50,7 +50,7 @@ pub(crate) fn touch(record: &mut LastUsed, id: &str, secs: u64) {
     *stamp = (*stamp).max(secs);
 }
 
-/// Replaces the record on disk.
+/// Replaces the record on disk. A failed save leaves no temporary file behind.
 pub(crate) fn save(path: &Path, record: &LastUsed) -> io::Result<()> {
     let mut entries: Vec<(&String, &u64)> = record.iter().collect();
     entries.sort();
@@ -58,14 +58,32 @@ pub(crate) fn save(path: &Path, record: &LastUsed) -> io::Result<()> {
     for (id, secs) in entries {
         text.push_str(&format!("{secs} {id}\n"));
     }
-    // Per process, so two writers never share a temporary file.
+    let tmp = tmp_path(path);
+    let written = fs::File::create(&tmp).and_then(|mut file| {
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        fs::rename(&tmp, path)
+    });
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    written
+}
+
+/// Whether a save could create its temporary file, checked by creating and removing it.
+/// Starting a record costs an image list, so a record that could never be saved must not
+/// start one on every run.
+pub(crate) fn writable(path: &Path) -> io::Result<()> {
+    let tmp = tmp_path(path);
+    fs::File::create(&tmp)?;
+    fs::remove_file(&tmp)
+}
+
+/// Per process, so two writers never share a temporary file.
+fn tmp_path(path: &Path) -> PathBuf {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(format!(".tmp.{}", std::process::id()));
-    let tmp = PathBuf::from(tmp);
-    let mut file = fs::File::create(&tmp)?;
-    file.write_all(text.as_bytes())?;
-    file.sync_all()?;
-    fs::rename(&tmp, path)
+    PathBuf::from(tmp)
 }
 
 #[cfg(test)]
@@ -128,6 +146,27 @@ mod tests {
         assert_eq!(record["sha256:aaa"], 200);
         touch(&mut record, "sha256:aaa", 300);
         assert_eq!(record["sha256:aaa"], 300);
+    }
+
+    #[test]
+    fn a_failed_save_leaves_no_temporary_file() {
+        let path = fixture("failed-save");
+        // A non-empty directory where the record should be: the rename onto it fails.
+        fs::create_dir_all(path.join("occupied")).unwrap();
+        assert!(save(&path, &LastUsed::from([("sha256:aaa".to_string(), 1)])).is_err());
+        let names: Vec<_> = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, vec!["image-use"]);
+    }
+
+    #[test]
+    fn writable_tells_a_usable_directory_from_a_missing_one() {
+        let path = fixture("writable");
+        writable(&path).unwrap();
+        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 0);
+        assert!(writable(&path.parent().unwrap().join("missing").join("image-use")).is_err());
     }
 
     #[test]
