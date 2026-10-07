@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.5.0
 
 - Added `images --max-size <size>`, the mirror of `--min-size`: images that would free more are evicted only once nothing else is left. Re-pulling a large image is what keeps a launch waiting, while a small one is back in about a second; and deleting costs per file and stalls creates for the length of one removal, so several small removals are gentler than one large one. Size is what removal would free, the bytes in layers no other image shares, as of the start of the pass. Images it reports carry `, over max-size`.
 - Added `images --stale-after <duration>`, which needs `--lru`: an image unused for longer is stale, held back by neither `--min-size` nor `--max-size`, and goes by age alone. Without it, `--max-size` keeps a large image nothing uses any more, such as a replaced build, until nothing smaller is left. Off by default, so `--min-size` behaves as before unless it is set. Like `--lru`, it keeps its last value when repeated. A record that shows no use at all within the duration is taken to be no longer kept: that pass treats nothing as stale and warns, rather than letting every image go by age alone.
