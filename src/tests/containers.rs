@@ -229,7 +229,12 @@ async fn record_image_use() {
     reap_containers(docker_client(), &config(false))
         .await
         .expect("failed to reap containers");
-    let record = crate::usage::load(&path).expect("failed to read the record");
+    let (record, began) = crate::usage::load(&path).expect("failed to read the record");
+    let began = began.expect("a new record says when it began");
+    assert!(
+        began >= before,
+        "a new record began at {began}, before the run at {before}"
+    );
     let stamp = *record
         .get(&image_id)
         .expect("the container's image was not recorded");
@@ -257,11 +262,16 @@ async fn record_image_use() {
 
     let mut edited = record.clone();
     edited.insert("sha256:gone".to_string(), 5);
-    crate::usage::save(&path, &edited).unwrap();
+    crate::usage::save(&path, &edited, began).unwrap();
     reap_containers(docker_client(), &config(false))
         .await
         .expect("failed to reap containers");
-    let record = crate::usage::load(&path).expect("failed to read the record");
+    let (record, still_began) = crate::usage::load(&path).expect("failed to read the record");
+    assert_eq!(
+        still_began,
+        Some(began),
+        "a later run keeps when the record began"
+    );
     assert_eq!(
         record.get("sha256:gone"),
         Some(&5),

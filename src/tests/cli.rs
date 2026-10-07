@@ -27,11 +27,25 @@ fn a_repeated_path_flag_keeps_the_last_value() {
     };
     assert_eq!(args.record_image_use, Some(PathBuf::from("/b")));
 
-    let Commands::Images(args) = parse(&["docker-reaper", "images", "--lru", "/a", "--lru", "/b"])
-    else {
+    let Commands::Images(args) = parse(&[
+        "docker-reaper",
+        "images",
+        "--lru",
+        "/a",
+        "--stale-after",
+        "1h",
+        "--lru",
+        "/b",
+        "--stale-after",
+        "72h",
+    ]) else {
         panic!("not the images subcommand");
     };
     assert_eq!(args.lru, Some(PathBuf::from("/b")));
+    assert_eq!(
+        args.stale_after,
+        Some(std::time::Duration::from_secs(72 * 3600))
+    );
 
     let Commands::Shims(args) = parse(&[
         "docker-reaper",
@@ -60,6 +74,34 @@ fn filters_still_accumulate() {
         panic!("not the images subcommand");
     };
     assert_eq!(args.filters.len(), 2);
+}
+
+/// Staleness is decided by when an image was last used, which only the --lru record knows;
+/// the size rule needs no record.
+#[test]
+fn staleness_needs_the_use_record_and_max_size_does_not() {
+    assert!(Cli::try_parse_from(["docker-reaper", "images", "--stale-after", "72h"]).is_err());
+
+    let Commands::Images(args) = parse(&["docker-reaper", "images", "--max-size", "1G"]) else {
+        panic!("not the images subcommand");
+    };
+    assert_eq!(args.max_size, Some(1 << 30));
+    assert_eq!(args.stale_after, None);
+
+    let Commands::Images(args) = parse(&[
+        "docker-reaper",
+        "images",
+        "--lru",
+        "/a",
+        "--stale-after",
+        "72h",
+    ]) else {
+        panic!("not the images subcommand");
+    };
+    assert_eq!(
+        args.stale_after,
+        Some(std::time::Duration::from_secs(72 * 3600))
+    );
 }
 
 #[test]

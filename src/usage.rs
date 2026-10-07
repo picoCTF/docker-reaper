@@ -5,6 +5,9 @@
 //! One line per image, `<unix seconds> <image id>`, replaced whole by a rename so a reader
 //! never sees a torn file. There is no lock: writers only move stamps forward or drop
 //! images that are gone, and a change lost to a concurrent write is made again later.
+//!
+//! A first line `# began <unix seconds>` says when the record started, which is when the
+//! images stamped 0 were last known to be there. Readers before 1.5.0 skip it as malformed.
 
 use std::collections::HashMap;
 use std::fs;
@@ -22,18 +25,25 @@ pub(crate) fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// Reads the record. A missing file is an empty record, and a malformed line is skipped,
-/// including one that is not UTF-8: a record that cannot be read is never rewritten, so
-/// one bad byte refusing the whole file would turn LRU off for good.
-pub(crate) fn load(path: &Path) -> io::Result<LastUsed> {
+const BEGAN: &str = "# began ";
+
+/// Reads the record, and when it began if it says. A missing file is an empty record, and a
+/// malformed line is skipped, including one that is not UTF-8: a record that cannot be read
+/// is never rewritten, so one bad byte refusing the whole file would turn LRU off for good.
+pub(crate) fn load(path: &Path) -> io::Result<(LastUsed, Option<u64>)> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(LastUsed::new()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok((LastUsed::new(), None)),
         Err(e) => return Err(e),
     };
     let text = String::from_utf8_lossy(&bytes);
     let mut record = LastUsed::new();
+    let mut began = None;
     for line in text.lines() {
+        if let Some(secs) = line.strip_prefix(BEGAN) {
+            began = secs.parse().ok().or(began);
+            continue;
+        }
         let Some((secs, id)) = line.split_once(' ') else {
             continue;
         };
@@ -44,7 +54,7 @@ pub(crate) fn load(path: &Path) -> io::Result<LastUsed> {
             touch(&mut record, id, secs);
         }
     }
-    Ok(record)
+    Ok((record, began))
 }
 
 /// Moves an image's stamp forward to `secs`, never back.
@@ -53,11 +63,12 @@ pub(crate) fn touch(record: &mut LastUsed, id: &str, secs: u64) {
     *stamp = (*stamp).max(secs);
 }
 
-/// Replaces the record on disk. A failed save leaves no temporary file behind.
-pub(crate) fn save(path: &Path, record: &LastUsed) -> io::Result<()> {
+/// Replaces the record on disk, saying it began at `began`. A failed save leaves no
+/// temporary file behind.
+pub(crate) fn save(path: &Path, record: &LastUsed, began: u64) -> io::Result<()> {
     let mut entries: Vec<(&String, &u64)> = record.iter().collect();
     entries.sort();
-    let mut text = String::new();
+    let mut text = format!("{BEGAN}{began}\n");
     for (id, secs) in entries {
         text.push_str(&format!("{secs} {id}\n"));
     }
@@ -109,7 +120,7 @@ mod tests {
     #[test]
     fn a_missing_record_is_empty() {
         let path = fixture("missing");
-        assert!(load(&path).unwrap().is_empty());
+        assert_eq!(load(&path).unwrap(), (LastUsed::new(), None));
     }
 
     #[test]
@@ -119,8 +130,8 @@ mod tests {
             ("sha256:aaa".to_string(), 100),
             ("sha256:bbb".to_string(), 200),
         ]);
-        save(&path, &record).unwrap();
-        assert_eq!(load(&path).unwrap(), record);
+        save(&path, &record, 50).unwrap();
+        assert_eq!(load(&path).unwrap(), (record, Some(50)));
         let names: Vec<_> = fs::read_dir(path.parent().unwrap())
             .unwrap()
             .map(|e| e.unwrap().file_name())
@@ -136,7 +147,7 @@ mod tests {
             "100 sha256:aaa\nnot-a-number sha256:bbb\nno-space\n200 \n\n300 sha256:ccc\n",
         )
         .unwrap();
-        let record = load(&path).unwrap();
+        let (record, _) = load(&path).unwrap();
         assert_eq!(
             record,
             LastUsed::from([
@@ -161,7 +172,7 @@ mod tests {
         let path = fixture("failed-save");
         // A non-empty directory where the record should be: the rename onto it fails.
         fs::create_dir_all(path.join("occupied")).unwrap();
-        assert!(save(&path, &LastUsed::from([("sha256:aaa".to_string(), 1)])).is_err());
+        assert!(save(&path, &LastUsed::from([("sha256:aaa".to_string(), 1)]), 1).is_err());
         let names: Vec<_> = fs::read_dir(path.parent().unwrap())
             .unwrap()
             .map(|e| e.unwrap().file_name())
@@ -185,7 +196,7 @@ mod tests {
             b"100 sha256:aaa\n\xff\xfe 5 junk\n200 sha256:b\xffb\n300 sha256:ccc\n",
         )
         .unwrap();
-        let record = load(&path).unwrap();
+        let (record, _) = load(&path).unwrap();
         assert_eq!(record.get("sha256:aaa"), Some(&100));
         assert_eq!(record.get("sha256:ccc"), Some(&300));
         assert_eq!(
@@ -196,9 +207,21 @@ mod tests {
     }
 
     #[test]
+    fn when_the_record_began_is_read_and_never_an_entry() {
+        let path = fixture("began");
+        fs::write(&path, "100 sha256:aaa\n").unwrap();
+        assert_eq!(load(&path).unwrap().1, None, "a 1.4.0 record does not say");
+
+        fs::write(&path, "# began 42\n0 sha256:aaa\n# began junk\n").unwrap();
+        let (record, began) = load(&path).unwrap();
+        assert_eq!(began, Some(42), "a malformed began line costs only itself");
+        assert_eq!(record, LastUsed::from([("sha256:aaa".to_string(), 0)]));
+    }
+
+    #[test]
     fn a_duplicated_line_keeps_the_later_stamp() {
         let path = fixture("duplicate");
         fs::write(&path, "300 sha256:aaa\n100 sha256:aaa\n").unwrap();
-        assert_eq!(load(&path).unwrap()["sha256:aaa"], 300);
+        assert_eq!(load(&path).unwrap().0["sha256:aaa"], 300);
     }
 }

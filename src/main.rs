@@ -13,7 +13,8 @@ use bollard::Docker;
 use clap::{Args, Parser, Subcommand};
 use reaper::{
     Filter, ReapContainersConfig, ReapImagesConfig, ReapNetworksConfig, ReapShimsConfig,
-    ReapVolumesConfig, reap_containers, reap_images, reap_networks, reap_shims, reap_volumes,
+    ReapVolumesConfig, check_image_bounds, reap_containers, reap_images, reap_networks, reap_shims,
+    reap_volumes,
 };
 use std::path::PathBuf;
 use tokio::time::{Duration, sleep};
@@ -118,6 +119,7 @@ struct VolumesArgs {
 }
 
 #[derive(Debug, Args)]
+#[command(after_help = "Note: <duration> values accept Go-style duration strings (e.g. 72h)")]
 struct ImagesArgs {
     /// Only reap when the measured filesystem is at least this full (percent).
     #[arg(long, value_name = "percent", default_value_t = 80, value_parser = parse_percent)]
@@ -147,6 +149,20 @@ struct ImagesArgs {
     /// candidate is left. Units are binary: K, M and G mean KiB, MiB and GiB.
     #[arg(long, value_name = "size", value_parser = parse_size, default_value = "0")]
     min_size: u64,
+    /// Evict images that would free more than this (e.g. 1G) only once nothing else is left:
+    /// they are the slow ones to pull back for a launch. Units as for --min-size.
+    #[arg(long, value_name = "size", value_parser = parse_size)]
+    max_size: Option<u64>,
+    /// With --lru, an image unused for longer than this is stale: --min-size and --max-size
+    /// no longer hold it back, so it goes by age alone.
+    #[arg(
+        long,
+        value_name = "duration",
+        value_parser = parse_duration,
+        requires = "lru",
+        overrides_with = "stale_after"
+    )]
+    stale_after: Option<Duration>,
 }
 
 #[derive(Debug, Args)]
@@ -252,6 +268,12 @@ async fn main() -> Result<(), anyhow::Error> {
         );
     }
 
+    // A pass only logs its errors, so bounds no pass can use would leave a unit evicting
+    // nothing while it reports success.
+    if let Commands::Images(ref args) = global_args.command {
+        check_image_bounds(args.threshold, args.target, args.min_size, args.max_size)?;
+    }
+
     // Orphaned shims are found by reading this machine's process table, which says
     // nothing about a daemon running elsewhere.
     // DOCKER_CERT_PATH matters as much as DOCKER_HOST: the branch below prefers it and
@@ -331,6 +353,8 @@ async fn main() -> Result<(), anyhow::Error> {
                     filters: &args.filters,
                     lru: args.lru.clone(),
                     min_size: args.min_size,
+                    max_size: args.max_size,
+                    stale_after: args.stale_after,
                 };
                 reap_images(&docker, &config).await
             }

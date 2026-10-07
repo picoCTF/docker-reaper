@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Added `images --max-size <size>`, the mirror of `--min-size`: images that would free more are evicted only once nothing else is left. Re-pulling a large image is what keeps a launch waiting, while a small one is back in about a second; and deleting costs per file and stalls creates for the length of one removal, so several small removals are gentler than one large one. Size is what removal would free, the bytes in layers no other image shares, as of the start of the pass. Images it reports carry `, over max-size`.
+- Added `images --stale-after <duration>`, which needs `--lru`: an image unused for longer is stale, held back by neither `--min-size` nor `--max-size`, and goes by age alone. Without it, `--max-size` keeps a large image nothing uses any more, such as a replaced build, until nothing smaller is left. Off by default, so `--min-size` behaves as before unless it is set. Like `--lru`, it keeps its last value when repeated. A record that shows no use at all within the duration is taken to be no longer kept: that pass treats nothing as stale and warns, rather than letting every image go by age alone.
+- The image use record now starts with a `# began <unix seconds>` line, which releases before 1.5.0 skip. An image stamped 0, there when the record began, ages from that time for `--stale-after`, so a new or deleted record does not make every image stale at once. A record from an earlier release is taken to begin when this release first saves it.
+- `images` refuses a `--target` at or above `--threshold`, or a `--max-size` below `--min-size`, at startup. Before, each pass logged the error and the process exited successfully, evicting nothing.
+
 ## v1.4.0
 
 - Added `images --lru <path>`, which evicts unused images least recently used first rather than largest first. Docker records no last-used time for an image (the Engine API has none, and a pull does not set `LastTagTime`), so the order comes from a record kept by the container sweep: `containers --record-image-use <path>` stamps the image of every container the sweep lists as in use now. It reads the container list the sweep fetches anyway, so it adds no call to the daemon; the one exception is the run that creates the record, which lists images once and stamps every image already on the host as older than anything seen since. An image the record has never seen counts as used just now, since it most likely arrived for a launch whose container does not exist yet. Ties are broken by largest reclaimable size, as the default order does.

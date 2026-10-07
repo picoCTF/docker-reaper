@@ -105,6 +105,11 @@ pub(crate) struct ReapImagesConfig<'a> {
     /// Images that would reclaim less than this many bytes are evicted only once no
     /// larger candidate is left.
     pub(crate) min_size: u64,
+    /// Images that would reclaim more than this many bytes are evicted only once nothing
+    /// else is left.
+    pub(crate) max_size: Option<u64>,
+    /// With `lru`, an image unused for longer than this is exempt from both size rules.
+    pub(crate) stale_after: Option<Duration>,
 }
 
 #[derive(Debug)]
@@ -358,6 +363,8 @@ pub(crate) enum ReapError {
     InvalidAgeBound,
     #[error("target must be less than threshold")]
     InvalidDiskBounds,
+    #[error("max-size must be at least min-size")]
+    InvalidSizeBounds,
     #[error("failed to measure disk usage: {0}")]
     DiskMeasurement(#[from] std::io::Error),
     #[error("failed to read the process table at {path}: {source}")]
@@ -507,29 +514,31 @@ pub(crate) async fn reap_containers(
 /// A record that does not exist yet starts here, and every image already on the host
 /// predates it. Those are stamped at 0, behind anything seen in use since and behind a
 /// later pull not yet used, which an eviction counts as used just now. That costs one
-/// image list per record, not per run.
+/// image list per record, not per run. A record from before 1.5.0 does not say when it
+/// began, so it is taken to begin now.
 async fn record_image_use(
     docker: &Docker,
     path: &Path,
     in_use: impl Iterator<Item = String>,
 ) -> std::io::Result<()> {
-    let mut record = if path.exists() {
+    let now = usage::now_secs();
+    let (mut record, began) = if path.exists() {
         usage::load(path)?
     } else {
         usage::writable(path)?;
-        docker
+        let seeded = docker
             .list_images(None::<ListImagesOptions>)
             .await
             .map_err(std::io::Error::other)?
             .into_iter()
             .map(|image| (image.id, 0))
-            .collect()
+            .collect();
+        (seeded, Some(now))
     };
-    let now = usage::now_secs();
     for id in in_use {
         usage::touch(&mut record, &id, now);
     }
-    usage::save(path, &record)
+    usage::save(path, &record, began.unwrap_or(now))
 }
 
 pub(crate) async fn reap_networks(
@@ -760,20 +769,82 @@ pub(crate) fn order_least_recently_used(candidates: &mut [ImageCandidate], last_
 }
 
 /// Moves candidates that would reclaim less than `min_size` behind every larger one,
-/// keeping the order within each group. Each removal stalls the daemon's creates and
-/// pulls while it runs, so one should free something worth it; the small ones stay
-/// candidates for when nothing larger is left.
-pub(crate) fn defer_small(candidates: &mut [ImageCandidate], min_size: u64) {
-    candidates.sort_by_key(|c| c.unique_size < min_size);
+/// keeping the order within each group, unless `exempt`, so a pass reaches its target in
+/// fewer removals. The small ones stay candidates for when nothing larger is left.
+pub(crate) fn defer_small(
+    candidates: &mut [ImageCandidate],
+    min_size: u64,
+    exempt: impl Fn(&ImageCandidate) -> bool,
+) {
+    candidates.sort_by_key(|c| c.unique_size < min_size && !exempt(c));
+}
+
+/// Moves candidates that would reclaim more than `max_size` behind every other one, keeping
+/// the order within each group, unless `exempt`. A large image is the slow one to pull back
+/// for a launch, while a small one is back in about a second.
+pub(crate) fn defer_large(
+    candidates: &mut [ImageCandidate],
+    max_size: u64,
+    exempt: impl Fn(&ImageCandidate) -> bool,
+) {
+    candidates.sort_by_key(|c| c.unique_size > max_size && !exempt(c));
+}
+
+/// Whether the record last saw a candidate in use before `before`. One it has never seen
+/// counts as used just now, so is never stale. One stamped 0 was last known on the host when
+/// the record began, so ages from `began`, and is never stale while that is unknown.
+pub(crate) fn stale(
+    candidate: &ImageCandidate,
+    last_used: &LastUsed,
+    began: Option<u64>,
+    before: u64,
+) -> bool {
+    match last_used.get(&candidate.id) {
+        None => false,
+        Some(0) => began.is_some_and(|began| began < before),
+        Some(&stamp) => stamp < before,
+    }
+}
+
+/// Whether the record looks no longer kept: it would make some candidate stale, yet shows no
+/// use at or after `before`, a seeded image counting as used when the record began.
+pub(crate) fn abandoned(
+    candidates: &[ImageCandidate],
+    last_used: &LastUsed,
+    began: Option<u64>,
+    before: u64,
+) -> bool {
+    let used = began.is_some_and(|began| began >= before)
+        || last_used.values().any(|&stamp| stamp >= before);
+    !used
+        && candidates
+            .iter()
+            .any(|c| stale(c, last_used, began, before))
+}
+
+/// The bounds no eviction pass can work with, refused at startup as well as by each pass.
+pub(crate) fn check_image_bounds(
+    threshold: u8,
+    target: u8,
+    min_size: u64,
+    max_size: Option<u64>,
+) -> Result<(), ReapError> {
+    if target >= threshold {
+        return Err(ReapError::InvalidDiskBounds);
+    }
+    if max_size.is_some_and(|max| max < min_size) {
+        return Err(ReapError::InvalidSizeBounds);
+    }
+    Ok(())
 }
 
 /// The record an eviction pass read, for reporting: none when it could not be read, since
 /// every image in the stand-in counts as used just now and saying so would mislead.
-fn known_use(last_used: &Option<(LastUsed, bool)>) -> Option<&LastUsed> {
+fn known_use(last_used: &Option<(LastUsed, Option<u64>, bool)>) -> Option<&LastUsed> {
     last_used
         .as_ref()
-        .filter(|(_, read)| *read)
-        .map(|(record, _)| record)
+        .filter(|(_, _, read)| *read)
+        .map(|(record, _, _)| record)
 }
 
 /// An image's size, and when it was last used if the record says.
@@ -838,9 +909,12 @@ pub(crate) async fn reap_images(
     docker: &Docker,
     config: &ReapImagesConfig<'_>,
 ) -> Result<Vec<Resource>, ReapError> {
-    if config.target >= config.threshold {
-        return Err(ReapError::InvalidDiskBounds);
-    }
+    check_image_bounds(
+        config.threshold,
+        config.target,
+        config.min_size,
+        config.max_size,
+    )?;
 
     // Resolve the filesystem to measure: an explicit path, or the daemon's
     // image store. The latter is only meaningful when the daemon is local —
@@ -901,27 +975,75 @@ pub(crate) async fn reap_images(
 
     let mut candidates = plan_image_evictions(&images, &in_use);
     let now = usage::now_secs();
-    // With --lru, the record and whether it may be written back: one that could
-    // not be read is left as it is rather than replaced by a blank one.
+    // With --lru, the record, when it began, and whether it may be written back: one that
+    // could not be read is left as it is rather than replaced by a blank one.
     let mut last_used = config
         .lru
         .as_ref()
         .map(|path| match usage::load(path) {
-            Ok(record) => (record, true),
+            Ok((record, began)) => (record, began, true),
             Err(e) => {
                 warn!(
                     "Failed to read the image use record at {}: {}; every image counts as just used, and the record is left as it is",
                     path.display(),
                     e
                 );
-                (LastUsed::new(), false)
+                (LastUsed::new(), None, false)
             }
         });
-    if let Some((ref mut record, _)) = last_used {
+    // --stale-after is refused without --lru, so the record is there whenever it is set.
+    // Judged before this pass stamps anything: a record that shows no use in that long is
+    // most likely no longer kept, and would make every image stale.
+    let stale_before = match (config.stale_after, &last_used) {
+        (Some(after), Some((record, began, true))) => {
+            let before = now.saturating_sub(after.as_secs());
+            if !abandoned(&candidates, record, *began, before) {
+                Some(before)
+            } else {
+                warn!(
+                    "The image use record shows no use within {}, so no image counts as stale on this pass; is the containers sweep still keeping it?",
+                    format_age(after.as_secs())
+                );
+                None
+            }
+        }
+        _ => None,
+    };
+    if let Some((ref mut record, _, _)) = last_used {
         stamp_for_eviction(record, &in_use, &images, now);
         order_least_recently_used(&mut candidates, record);
     }
-    defer_small(&mut candidates, config.min_size);
+    let is_stale = |candidate: &ImageCandidate| match (stale_before, &last_used) {
+        (Some(before), Some((record, began, _))) => stale(candidate, record, *began, before),
+        _ => false,
+    };
+    defer_small(&mut candidates, config.min_size, is_stale);
+    if let Some(max_size) = config.max_size {
+        defer_large(&mut candidates, max_size, is_stale);
+        let kept = candidates
+            .iter()
+            .filter(|c| c.unique_size > max_size && !is_stale(c))
+            .count();
+        if kept > 0 {
+            info!(
+                "{kept} of {} candidates would free more than {}; they go only once nothing else is left",
+                candidates.len(),
+                format_size(max_size)
+            );
+        }
+    }
+    let details = |candidate: &ImageCandidate| {
+        let mut details = describe_image(candidate, known_use(&last_used), now);
+        if is_stale(candidate) {
+            details.push_str(", stale");
+        } else if config
+            .max_size
+            .is_some_and(|max| candidate.unique_size > max)
+        {
+            details.push_str(", over max-size");
+        }
+        details
+    };
     let target_bytes = (config.target as u64) * (capacity / 100);
 
     if config.dry_run {
@@ -939,7 +1061,7 @@ pub(crate) async fn reap_images(
                 };
                 Resource {
                     resource_type: ResourceType::Image,
-                    details: describe_image(&candidate, known_use(&last_used), now),
+                    details: details(&candidate),
                     id: candidate.id,
                     name: candidate.name,
                     status,
@@ -964,7 +1086,7 @@ pub(crate) async fn reap_images(
         }
         let mut resource = Resource {
             resource_type: ResourceType::Image,
-            details: describe_image(&candidate, known_use(&last_used), now),
+            details: details(&candidate),
             id: candidate.id,
             name: candidate.name,
             status: RemovalStatus::Eligible,
@@ -973,14 +1095,14 @@ pub(crate) async fn reap_images(
         results.push(resource);
     }
 
-    if let (Some(path), Some((mut record, true))) = (&config.lru, last_used) {
+    if let (Some(path), Some((mut record, began, true))) = (&config.lru, last_used) {
         let removed: HashSet<&str> = results
             .iter()
             .filter(|r| matches!(r.status, RemovalStatus::Success))
             .map(|r| r.id.as_str())
             .collect();
         settle_record(&mut record, &images, &removed, config.filters.is_empty());
-        if let Err(e) = usage::save(path, &record) {
+        if let Err(e) = usage::save(path, &record, began.unwrap_or(now)) {
             warn!(
                 "Failed to save the image use record at {}: {}",
                 path.display(),
