@@ -86,7 +86,9 @@ Key flags for `docker-reaper images`:
 - `--disk-path <path>`: Filesystem path to measure disk usage on. Defaults to the Docker daemon's root directory (`docker_root_dir`). Note: when targeting a remote daemon via `DOCKER_HOST`, `--disk-path` must be explicitly specified because disk measurement operates on local storage.
 - `-f, --filter <name=value>`: Only reap images matching Docker Engine-supported filters (can be specified multiple times).
 - `--lru <path>`: Evict least recently used first, by the record at this path (see below).
-- `--min-size <size>`: Evict images that would free less than this (e.g. `256MiB`, `1G`; binary units) only once no larger candidate is left. Deleting an image holds dockerd's image and layer store locks until its files are gone, stalling every container create and image pull on the host meanwhile, so a removal should free something worth that. Default `0`, which leaves the order alone.
+- `--min-size <size>`: Evict images that would free less than this (e.g. `256MiB`, `1G`; binary units) only once no larger candidate is left, so a pass reaches its target in fewer removals. Fewer is not necessarily gentler, since a removal costs time per file rather than per byte (see [Keeping large images](#keeping-large-images)). Default `0`, which leaves the order alone.
+- `--max-size <size>`: Evict images that would free more than this only once nothing else is left; the mirror of `--min-size` (see below). Must be at least `--min-size`.
+- `--stale-after <duration>`: With `--lru`, an image unused for longer than this is stale: neither `--min-size` nor `--max-size` holds it back, so it goes by age alone. Off by default.
 
 Images are selected and evicted largest-unique-size first (reclaimable bytes not shared with other images) until disk usage drops below the target percentage. Non-forced removals skip images that gain containers mid-run.
 
@@ -116,18 +118,59 @@ $ docker-reaper images --threshold 80 --target 70 --lru /var/lib/docker-reaper/i
   and that pass orders by size alone; a line in it that cannot be parsed costs only that
   line. With `--min-size`, size comes first: every image that would free at least that much
   goes before any that would not, so a large image used a minute ago, or pulled just now,
-  goes before a small one unused for weeks.
+  goes before a small one unused for weeks, unless `--stale-after` makes that one stale.
 
-Repeating `--record-image-use`, `--lru` or `--data-root` keeps the last value, so a
-deployment can append them to a command that may already carry them.
+Repeating `--record-image-use`, `--lru`, `--stale-after` or `--data-root` keeps the last
+value, so a deployment can append them to a command that may already carry them.
 
 Sampling is as frequent as the container sweep runs, so a container that comes and goes
 between two runs is not seen. The record is a text file, `<unix seconds> <image id>` per
-line; deleting it starts it over.
+line, after a first line `# began <unix seconds>` saying when the record started; releases
+before 1.5.0 skip that line. Deleting the record starts it over.
 
 One case it cannot see: an image removed by something other than this sweep, then pulled
 again before the next eviction pass, keeps the stamp it had. Noticing the removal in between
 would take an image list every run. After removing images by hand, delete the record.
+
+#### Keeping large images
+
+Pulling an image back costs time in proportion to its size, since dockerd unpacks each
+layer on one core, so a launch that needs a multi-GB image again waits tens of seconds
+while a small one is back in about a second. Deleting costs per file rather than per byte
+or per image, and stalls creates for one removal at a time, so several small removals are
+gentler than one large one.
+
+`--max-size <size>` acts on both: images that would free more than the size go only once
+every other candidate is gone. Size, here and for `--min-size`, is what removing the image
+frees: the bytes in layers no other image shares (the UNIQUE SIZE of `docker system df
+-v`), which is also what a re-pull would have to fetch and unpack.
+
+On its own it also keeps a large image that nothing uses any more, such as a replaced build
+or a retired challenge, until nothing smaller is left. With `--lru`, `--stale-after
+<duration>` ages those out: an image unused for longer goes by age alone, whatever its
+size. The order is then:
+
+1. stale images, oldest first;
+2. the rest, oldest first;
+3. images under `--min-size`, oldest first;
+4. images over `--max-size`, oldest first.
+
+Without `--lru` there is no age, and each group goes largest first. An image the record
+has never seen counts as just used, so a large pull for a launch that has no container yet
+is never stale. One stamped 0, there when the record began, ages from when it began, so a
+new or deleted record makes nothing stale for `--stale-after`; a record from before 1.5.0
+is taken to begin when this release first saves it. A record that shows no use at all
+within `--stale-after` is most likely no longer being kept, so that pass treats nothing as
+stale and says so, rather than letting every image go by age alone.
+
+Sizes are those at the start of a pass. Removing one image can leave another as the only
+one using layers they shared, which then would free more, and cost more to pull back, than
+when the pass began; it keeps its place until the next pass. Listing images again after
+every removal would catch it, at the cost of an image list per removal.
+
+```bash
+$ docker-reaper images --threshold 89 --target 84 --lru /var/lib/docker-reaper/image-use --max-size 1G --stale-after 72h
+```
 
 ### Orphaned containerd shim sweep
 

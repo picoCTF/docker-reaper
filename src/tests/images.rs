@@ -8,8 +8,8 @@
 //! and tested here. The one live test filters to no image at all.
 
 use crate::reaper::{
-    ImageCandidate, defer_small, describe_image, order_least_recently_used, plan_image_evictions,
-    settle_record, stamp_for_eviction,
+    ImageCandidate, abandoned, check_image_bounds, defer_large, defer_small, describe_image,
+    order_least_recently_used, plan_image_evictions, settle_record, stale, stamp_for_eviction,
 };
 use crate::usage::LastUsed;
 use bollard::models::ImageSummary;
@@ -229,7 +229,7 @@ fn small_images_wait_until_nothing_larger_is_left() {
             ("sha256:big-new".to_string(), 4),
         ]),
     );
-    defer_small(&mut plan, 100);
+    defer_small(&mut plan, 100, |_| false);
     assert_eq!(
         ids(&plan),
         vec![
@@ -242,8 +242,139 @@ fn small_images_wait_until_nothing_larger_is_left() {
     );
 
     let before = ids(&plan).iter().map(|s| s.to_string()).collect::<Vec<_>>();
-    defer_small(&mut plan, 0);
+    defer_small(&mut plan, 0, |_| false);
     assert_eq!(ids(&plan), before, "0 leaves the order alone");
+}
+
+#[test]
+fn large_images_wait_until_nothing_else_is_left() {
+    // No record: the size rule alone, over the default largest-first order.
+    let images = vec![
+        image("sha256:small", Some("small:1"), 50, 0),
+        image("sha256:huge", Some("huge:1"), 5000, 0),
+        image("sha256:mid", Some("mid:1"), 300, 0),
+        image("sha256:big", Some("big:1"), 2000, 0),
+    ];
+    let mut plan = plan_image_evictions(&images, &HashSet::new());
+    defer_large(&mut plan, 1000, |_| false);
+    assert_eq!(
+        ids(&plan),
+        vec!["sha256:mid", "sha256:small", "sha256:huge", "sha256:big"]
+    );
+}
+
+#[test]
+fn stale_images_go_by_age_alone() {
+    let images = vec![
+        image("sha256:big-recent", Some("big-recent:1"), 5000, 0),
+        image("sha256:big-stale", Some("big-stale:1"), 4000, 0),
+        image("sha256:mid-fresh", Some("mid-fresh:1"), 300, 0),
+        image("sha256:small-stale", Some("small-stale:1"), 50, 0),
+        image("sha256:small-fresh", Some("small-fresh:1"), 40, 0),
+    ];
+    let mut plan = plan_image_evictions(&images, &HashSet::new());
+    let record = LastUsed::from([
+        ("sha256:small-stale".to_string(), 100),
+        ("sha256:big-stale".to_string(), 200),
+        ("sha256:mid-fresh".to_string(), 700),
+        ("sha256:small-fresh".to_string(), 800),
+        ("sha256:big-recent".to_string(), 900),
+    ]);
+    order_least_recently_used(&mut plan, &record);
+    let is_stale = |c: &ImageCandidate| stale(c, &record, None, 500);
+    defer_small(&mut plan, 100, is_stale);
+    defer_large(&mut plan, 1000, is_stale);
+    assert_eq!(
+        ids(&plan),
+        vec![
+            "sha256:small-stale",
+            "sha256:big-stale",
+            "sha256:mid-fresh",
+            "sha256:small-fresh",
+            "sha256:big-recent"
+        ],
+        "stale first by age, then the rest, then fresh small ones, then fresh large ones"
+    );
+}
+
+#[test]
+fn staleness_needs_a_use_before_the_cutoff() {
+    let candidate = |id: &str| ImageCandidate {
+        id: id.to_string(),
+        name: id.to_string(),
+        unique_size: 1,
+    };
+    let record = LastUsed::from([
+        ("sha256:at-cutoff".to_string(), 500),
+        ("sha256:before".to_string(), 499),
+        ("sha256:seeded".to_string(), 0),
+    ]);
+    let is_stale = |id, began| stale(&candidate(id), &record, began, 500);
+    assert!(!is_stale("sha256:at-cutoff", Some(1)), "used at the cutoff");
+    assert!(is_stale("sha256:before", Some(1)), "used before the cutoff");
+    assert!(
+        !is_stale("sha256:unseen", Some(1)),
+        "unseen counts as just pulled"
+    );
+    assert!(
+        is_stale("sha256:seeded", Some(499)),
+        "seeded in a record that began before the cutoff"
+    );
+    assert!(
+        !is_stale("sha256:seeded", Some(500)),
+        "seeded in a record that began at the cutoff: a new record makes nothing stale"
+    );
+    assert!(
+        !is_stale("sha256:seeded", None),
+        "seeded in a record that does not say when it began"
+    );
+}
+
+#[test]
+fn a_record_with_no_recent_use_looks_abandoned() {
+    let candidate = |id: &str| ImageCandidate {
+        id: id.to_string(),
+        name: id.to_string(),
+        unique_size: 1,
+    };
+    let candidates = vec![candidate("sha256:old"), candidate("sha256:seeded")];
+    let record = LastUsed::from([
+        ("sha256:old".to_string(), 100),
+        ("sha256:seeded".to_string(), 0),
+    ]);
+    assert!(
+        abandoned(&candidates, &record, Some(50), 500),
+        "nothing since 500"
+    );
+    assert!(
+        abandoned(&candidates, &record, None, 500),
+        "nothing since 500, start unknown"
+    );
+    assert!(
+        !abandoned(&candidates, &record, Some(600), 500),
+        "began since 500"
+    );
+    let mut touched = record.clone();
+    touched.insert("sha256:new".to_string(), 500);
+    assert!(!abandoned(&candidates, &touched, None, 500), "used at 500");
+
+    // Only seeded entries and no start: nothing could be stale, so nothing to warn about.
+    let seeded = LastUsed::from([("sha256:seeded".to_string(), 0)]);
+    assert!(!abandoned(&candidates[1..], &seeded, None, 500));
+}
+
+#[test]
+fn bounds_no_pass_can_use_are_refused() {
+    assert!(check_image_bounds(89, 84, 0, None).is_ok());
+    assert!(check_image_bounds(89, 84, 100, Some(100)).is_ok());
+    assert!(
+        check_image_bounds(84, 84, 0, None).is_err(),
+        "target at threshold"
+    );
+    assert!(
+        check_image_bounds(89, 84, 200, Some(100)).is_err(),
+        "max-size below min-size"
+    );
 }
 
 /// An eviction pass rewrites a record it read, and leaves one it could not read exactly as
@@ -279,6 +410,8 @@ async fn an_unreadable_record_is_left_as_it_is() {
         filters: &filters,
         lru: Some(path.clone()),
         min_size: 0,
+        max_size: None,
+        stale_after: None,
     };
     let sweep = || async {
         reap_images(super::common::docker_client(), &config)
